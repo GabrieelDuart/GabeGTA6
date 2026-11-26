@@ -1376,6 +1376,8 @@ fn both_host_waves_observe_the_lds_flag_after_the_join() {
         }
     }
     eprintln!("all 14 flag dispatches passed on a 32-lane hardware adapter");
+}
+
 /// A per-lane loop header `L` whose back-edge returns to `L` before reaching a
 /// strict post-dominator is only visited by the active subset of lanes on
 /// subsequent iterations: `all_lanes(L)` must be `false` so a cross-wave
