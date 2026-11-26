@@ -10,7 +10,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $PSScriptRoot '..'
-$work = Join-Path ([IO.Path]::GetTempPath()) "victory-agility-$Version"
+# Downloaded beside the build (target\agility), on the project's own disk, not in %TEMP%.
+$work = Join-Path $root "target\agility\$Version"
+New-Item -ItemType Directory -Force -Path (Split-Path $work) | Out-Null
 $zip = "$work.zip"
 if (-not (Test-Path (Join-Path $work 'build\native\bin\x64\D3D12Core.dll'))) {
     $url = "https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.d3d12/$Version/microsoft.direct3d.d3d12.$Version.nupkg"
