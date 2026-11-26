@@ -59,6 +59,8 @@ pub(crate) struct Lowered {
     pub samplers: Vec<[u32; 4]>,
     /// The wave size the shader requires of the host, if any.
     pub wave_size: Option<u32>,
+    /// A mesh program translated as a compute program ([`mesh_as_compute`]).
+    pub mesh_compute: Option<super::MeshCompute>,
     /// Heap handles made with a non-uniform index.
     #[cfg(test)]
     pub nonuniform_handles: u32,
@@ -261,6 +263,10 @@ fn half_shift(width: u32) -> u32 {
 
 struct Lower<'a> {
     s: Shader,
+    /// A mesh program run as a compute program ([`mesh_as_compute`]).
+    mac: Option<Mac>,
+    /// Its group's first dword in the buffer ([`Mac`]).
+    mac_base: Option<V>,
     x: &'a Parts<'a>,
     bad: &'a HashMap<Value, Why>,
     lane_fail: HashMap<Value, Why>,
@@ -1514,8 +1520,67 @@ fn own_bits_on() -> bool {
 /// What the translator was told of the host, for a cache's key: the widest
 /// wave, the view heap's limit, where the raw twins of its views start, and
 /// what it writes for the console's own hardware.
-pub fn host_settings() -> [u32; 4] {
-    [host_max_wave(), super::shader::view_heap_limit(), super::shader::raw_views(), host_rdna()]
+pub fn host_settings() -> [u32; 5] {
+    [
+        host_max_wave(),
+        super::shader::view_heap_limit(),
+        super::shader::raw_views(),
+        host_rdna(),
+        u32::from(mesh_as_compute()),
+    ]
+}
+
+static MESH_AS_COMPUTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tells the translator that the host has no mesh shaders (a GeForce GTX
+/// 10 series, say): mesh programs are translated as compute programs that
+/// write their vertices and primitives into a buffer ([`super::MeshCompute`]),
+/// which a vertex shader of ours ([`super::mesh_vs`]) draws from.
+pub fn set_mesh_as_compute(on: bool) {
+    MESH_AS_COMPUTE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's choice for [`mesh_as_compute`], for its thread only.
+    pub(super) static TEST_MESH_AS_COMPUTE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether mesh programs become compute programs ([`set_mesh_as_compute`]).
+pub(super) fn mesh_as_compute() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_MESH_AS_COMPUTE.get() {
+        return on;
+    }
+    MESH_AS_COMPUTE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Where a mesh program run as a compute program puts what it exports
+/// ([`set_mesh_as_compute`]): each group a block of
+/// `max_vertices * vertex_dwords + max_primitives * primitive_dwords`
+/// dwords of the [`super::shader::SLOT_MESH_OUT`] buffer, its vertices
+/// first (lane n's at `n * vertex_dwords`, a signature row in four dwords),
+/// then its primitives (lane n's at `n * primitive_dwords`: three vertex
+/// indices, a dword left free, then its rows).
+#[derive(Debug, Clone, Copy)]
+struct Mac {
+    max_vertices: u32,
+    max_primitives: u32,
+    vertex_dwords: u32,
+    primitive_dwords: u32,
+}
+
+impl Mac {
+    fn group_dwords(&self) -> u32 {
+        self.max_vertices * self.vertex_dwords + self.max_primitives * self.primitive_dwords
+    }
+}
+
+/// Dwords a vertex or primitive record of a [`Mac`] takes: four per
+/// signature row (`first` dwords ahead of them).
+fn mac_record_dwords(elements: &[SigElement], first: u32) -> u32 {
+    let rows = elements.iter().filter_map(|e| e.row).map(|r| r + 1).max().unwrap_or(0);
+    first + 4 * rows
 }
 
 static HOST_RDNA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2118,6 +2183,8 @@ impl<'a> Lower<'a> {
             partial_active: None,
             wave_base: None,
             flat: None,
+            mac: None,
+            mac_base: None,
             no_barrier,
             fence_only,
             half_outputs: half_outputs(&x.native.io, &x.outputs),
@@ -2856,8 +2923,25 @@ impl<'a> Lower<'a> {
         let root_uavs = self.s.root_uavs.iter().map(|r| r.0).collect();
         let cmp_samplers = self.s.cmp_samplers;
         let wave_size = self.s.wave_size;
+        // A mesh program run as a compute program: what its exports are
+        // goes with it, and the program declares none.
+        let mesh_compute = self.mac.map(|mac| super::MeshCompute {
+            threads: self.s.threads.map_or(0, |t| t[0]),
+            max_vertices: mac.max_vertices,
+            max_primitives: mac.max_primitives,
+            vertex_dwords: mac.vertex_dwords,
+            primitive_dwords: mac.primitive_dwords,
+            outputs: super::container::signature(&self.s.outputs, false),
+            prims: super::container::signature(&self.s.prims, false),
+        });
+        if mesh_compute.is_some() {
+            self.s.mesh = None;
+            self.s.outputs.clear();
+            self.s.prims.clear();
+        }
         Ok(Lowered {
             wave_size,
+            mesh_compute,
             cmp_samplers,
             root_cbvs,
             root_srvs,
@@ -2973,9 +3057,15 @@ impl<'a> Lower<'a> {
             Input::GroupId(c) => return self.compute_id("groupId.i32", 94, c),
             Input::GroupInfo => return Val::Missing("the thread-group info SGPR"),
             Input::MeshGroup => {
-                let Val::I32(g) = self.compute_id("groupId.i32", 94, 0) else {
+                let Val::I32(mut g) = self.compute_id("groupId.i32", 94, 0) else {
                     unreachable!()
                 };
+                if mesh_as_compute() {
+                    // Run as a compute program, a few groups at a time: the
+                    // title's number of the first ([`Mac`]).
+                    let first = self.host_word(RootType::Other(super::shader::USER_MESH_GROUP_BASE), 0, 0);
+                    g = self.s.m.bin(self.s.entry, Bin::Add, g, first);
+                }
                 let n = self.s.m.i32(self.x.mesh_stride);
                 return Val::I32(self.s.m.bin(self.s.entry, Bin::Mul, g, n));
             }
@@ -5218,8 +5308,20 @@ impl<'a> Lower<'a> {
             self.s.m.i32(mesh.max_vertices),
             self.s.m.i32(mesh.max_primitives),
         );
-        self.s
-            .op(e, "setMeshOutputCounts", Attr::NoUnwind, void, 168, &[v, p]);
+        if mesh_as_compute() {
+            // No output counts: the vertex shader of ours draws every
+            // primitive of the declared count, and finds the culled ones
+            // (all indices 0) without area, as below.
+            self.mac = Some(Mac {
+                max_vertices: mesh.max_vertices,
+                max_primitives: mesh.max_primitives,
+                vertex_dwords: mac_record_dwords(&self.s.outputs, 0),
+                primitive_dwords: mac_record_dwords(&self.s.prims, 4),
+            });
+        } else {
+            self.s
+                .op(e, "setMeshOutputCounts", Attr::NoUnwind, void, 168, &[v, p]);
+        }
         let flat = self.mesh_thread();
         let z = self.s.m.i32(0);
         // Every primitive of the declared count starts culled, also those
@@ -5238,17 +5340,68 @@ impl<'a> Lower<'a> {
             let guard = ((pass + 1) * threads > mesh.max_primitives)
                 .then(|| self.s.m.cmp(self.cur, pred::IULT, index, p));
             let at = self.begin_guarded(guard);
-            self.s.op(
-                self.cur,
-                "emitIndices",
-                Attr::NoUnwind,
-                void,
-                169,
-                &[index, z, z, z],
-            );
+            if self.mac.is_some() {
+                self.mac_store(true, index, 0, &[z, z, z]);
+            } else {
+                self.s.op(
+                    self.cur,
+                    "emitIndices",
+                    Attr::NoUnwind,
+                    void,
+                    169,
+                    &[index, z, z, z],
+                );
+            }
             self.end_guarded(at, &[]);
         }
         Ok(())
+    }
+
+    /// [`Mac`]: the first dword of this group's block (the host's group,
+    /// not the title's: the buffer holds the groups of one dispatch of
+    /// ours), made in the entry block.
+    fn mac_group_base(&mut self) -> V {
+        if let Some(b) = self.mac_base {
+            return b;
+        }
+        let mac = self.mac.expect("a mesh program run as a compute program");
+        let e = self.s.entry;
+        let k = self.s.m.i32(0);
+        let g = self.s.op(e, "groupId.i32", Attr::ReadNone, self.s.t.i32, 94, &[k]);
+        let n = self.s.m.i32(mac.group_dwords());
+        let b = self.s.m.bin(e, Bin::Mul, g, n);
+        self.mac_base = Some(b);
+        b
+    }
+
+    /// [`Mac`]: stores `values` (at most four dwords) at dword `first` of
+    /// the record of vertex or primitive `index` of this group.
+    fn mac_store(&mut self, primitive: bool, index: V, first: u32, values: &[V]) {
+        let mac = self.mac.expect("a mesh program run as a compute program");
+        let base = self.mac_group_base();
+        let c = self.cur;
+        let (stride, start) = if primitive {
+            (mac.primitive_dwords, mac.max_vertices * mac.vertex_dwords)
+        } else {
+            (mac.vertex_dwords, 0)
+        };
+        let k = self.s.m.i32(stride);
+        let record = self.s.m.bin(c, Bin::Mul, index, k);
+        let k = self.s.m.i32(start + first);
+        let record = self.s.m.bin(c, Bin::Add, record, k);
+        let at = self.s.m.bin(c, Bin::Add, base, record);
+        let k2 = self.s.m.i32(2);
+        let at = self.s.m.bin(c, Bin::Shl, at, k2);
+        let h = self.s.root_uav_handle(super::shader::SLOT_MESH_OUT);
+        let iu = self.s.m.undef(self.s.t.i32);
+        let mut args = vec![h, at, iu];
+        for k in 0..4 {
+            args.push(values.get(k).copied().unwrap_or(iu));
+        }
+        args.push(self.s.m.i8((1u8 << values.len()) - 1));
+        args.push(self.s.m.i32(4));
+        let void = self.s.t.void;
+        self.s.op(c, "rawBufferStore.i32", Attr::NoUnwind, void, 140, &args);
     }
 
     /// Mesh: the thread's index in the group, which is its vertex and
@@ -12892,6 +13045,25 @@ impl<'a> Lower<'a> {
                     .op(c, "legacyF16ToF32", Attr::ReadNone, f32t, 131, &[x]);
                 x = self.as_int(f);
             }
+            if let Some(mac) = self.mac.filter(|_| mesh) {
+                // Into the record of this lane's vertex or primitive.
+                let el = &mut elements(self, primitive)[id];
+                el.usage |= 1 << col;
+                let (row, start) = (el.row, el.col);
+                let (first, stride) = if primitive {
+                    (4, mac.primitive_dwords)
+                } else {
+                    (0, mac.vertex_dwords)
+                };
+                if let Some(row) = row {
+                    let dword = first + row * 4 + u32::from(start + col);
+                    if dword < stride {
+                        let flat = self.mesh_thread();
+                        self.mac_store(primitive, flat, dword, &[x]);
+                    }
+                }
+                continue;
+            }
             let el = &mut elements(self, primitive)[id];
             el.usage |= 1 << col;
             let (suffix, x) = match el.comp {
@@ -12979,9 +13151,13 @@ impl<'a> Lower<'a> {
         for i in indices {
             args.push(self.s.m.select(c, culled, z, i));
         }
-        let void = self.s.t.void;
-        self.s
-            .op(c, "emitIndices", Attr::NoUnwind, void, 169, &args);
+        if self.mac.is_some() {
+            self.mac_store(true, flat, 0, &args[1..]);
+        } else {
+            let void = self.s.t.void;
+            self.s
+                .op(c, "emitIndices", Attr::NoUnwind, void, 169, &args);
+        }
         self.end_guarded(at, &[]);
         Ok(())
     }

@@ -94,6 +94,7 @@ mod lower;
 mod own_bits;
 #[cfg(all(test, windows))]
 mod permlane_tests;
+mod mesh_vs;
 mod rect;
 mod sampler;
 mod shader;
@@ -118,11 +119,12 @@ use crate::{ShaderError, io, ir, resource, structure};
 
 pub use bitcode::census;
 pub use sampler::StaticSampler;
-pub use lower::{host_settings, set_host_max_wave, set_host_rdna, set_thread_max_wave};
+pub use lower::{host_settings, set_host_max_wave, set_host_rdna, set_mesh_as_compute, set_thread_max_wave};
+pub use mesh_vs::mesh_vs;
 pub use rect::rect_list_gs;
 pub use shader::{
-    MEMORY_FAULTS, MEMORY_PAGES, MEMORY_READ_ONLY, ROOT_CBV_SPACE, SAMPLER_SPACE, SLOT_FAULTS, SLOT_MEMORY, SLOT_STRIDES,
-    SLOT_STRIDES_BYTES, SLOT_STRIDES_COUNT, VIEW_ADDRESSES, USER_DATA_SPACE, VIEW_INTEGER, VIEW_SIGNED, VIEW_STRIDE_BITS, USER_DISPATCH_THREADS_X, USER_MEMORY_BASE, USER_ROOT_ADDRESS, USER_VIEW_ADDRESS, USER_VIEW_BIAS,
+    MEMORY_FAULTS, MEMORY_PAGES, MEMORY_READ_ONLY, ROOT_CBV_SPACE, SAMPLER_SPACE, SLOT_FAULTS, SLOT_MEMORY, SLOT_MESH_OUT, SLOT_STRIDES,
+    SLOT_STRIDES_BYTES, SLOT_STRIDES_COUNT, VIEW_ADDRESSES, USER_DATA_SPACE, VIEW_INTEGER, VIEW_SIGNED, VIEW_STRIDE_BITS, USER_DISPATCH_THREADS_X, USER_MESH_GROUP_BASE, USER_MEMORY_BASE, USER_ROOT_ADDRESS, USER_VIEW_ADDRESS, USER_VIEW_BIAS,
     raw_views, set_raw_views, set_view_heap_limit, view_heap_limit,
 };
 
@@ -354,6 +356,45 @@ pub struct HostShader {
     pub root_uavs: Vec<u8>,
     /// Heap descriptors that can be selected from root state at bind time.
     pub root_indexed_views: Vec<crate::resource::RootIndexedView>,
+    /// A mesh program translated as a compute program, for a host without
+    /// mesh shaders (`set_mesh_as_compute`): where it puts its exports.
+    pub mesh_compute: Option<MeshCompute>,
+}
+
+/// A mesh program run as a compute program (`set_mesh_as_compute`): each
+/// thread group writes a block of [`MeshCompute::group_dwords`] dwords of
+/// the root UAV `u<SLOT_MESH_OUT>`, group `g` of the dispatch (not the
+/// title's number, which adds the user-data dword of kind
+/// [`USER_MESH_GROUP_BASE`]) at dword `g * group_dwords`:
+///
+/// - first `max_vertices` vertex records of `vertex_dwords`: lane `n`'s
+///   vertex at `n * vertex_dwords`, output row `r` column `c` at dword
+///   `4 * r + c` of it (the rows of [`MeshCompute::outputs`]);
+/// - then `max_primitives` primitive records of `primitive_dwords`: the
+///   three vertex indices of lane `n`'s triangle (all 0: culled), one dword
+///   unused, then the rows of [`MeshCompute::prims`] as above.
+///
+/// Every primitive record is written (culled ones too); vertex records
+/// only where a lane exports one, and only those a primitive names count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshCompute {
+    /// Lanes per group.
+    pub threads: u32,
+    pub max_vertices: u32,
+    pub max_primitives: u32,
+    pub vertex_dwords: u32,
+    pub primitive_dwords: u32,
+    /// The vertex outputs' signature (an `OSG1` part's data).
+    pub outputs: Vec<u8>,
+    /// The primitive outputs' signature (likewise).
+    pub prims: Vec<u8>,
+}
+
+impl MeshCompute {
+    /// Dwords of a group's block.
+    pub fn group_dwords(&self) -> u32 {
+        self.max_vertices * self.vertex_dwords + self.max_primitives * self.primitive_dwords
+    }
 }
 
 impl HostShader {
@@ -827,6 +868,7 @@ fn emit_program(
         root_srvs: l.root_srvs,
         root_uavs: l.root_uavs,
         root_indexed_views: res.root_indexed_views.clone(),
+        mesh_compute: l.mesh_compute,
     };
     Ok((shader, wave_size))
 }
@@ -1697,6 +1739,7 @@ mod tests {
             root_srvs: Vec::new(),
             root_uavs: Vec::new(),
             root_indexed_views: Vec::new(),
+            mesh_compute: None,
         };
         let file = |var: &str, stage| {
             std::env::var(var).ok().map(|p| super::HostShader {
@@ -1709,6 +1752,7 @@ mod tests {
                 root_srvs: Vec::new(),
                 root_uavs: Vec::new(),
                 root_indexed_views: Vec::new(),
+                mesh_compute: None,
             })
         };
         let ps = file("VICTORY_REF_PS", crate::HwStage::Ps).unwrap_or(ps);
@@ -1964,6 +2008,41 @@ mod tests {
         let res = resource::track(&p, &native.layout, native.stage, Some(&st))?;
         let io = io::raise(&p, &native)?;
         emit(&c, &native, &p, &st, &io, &res)
+    }
+
+    /// On a host without mesh shaders (`set_mesh_as_compute`) a mesh
+    /// program becomes a compute program of the same lanes that writes its
+    /// vertex and primitive records into `u<SLOT_MESH_OUT>`, says where
+    /// ([`MeshCompute`]), and declares no outputs; the vertex shader that
+    /// draws the records is made from that; dxil.dll, where there is one,
+    /// takes both.
+    #[test]
+    fn mesh_programs_run_as_compute_programs_without_mesh_shaders() {
+        lower::TEST_MESH_AS_COMPUTE.set(Some(true));
+        let made = triangle_mesh(TRIANGLE);
+        lower::TEST_MESH_AS_COMPUTE.set(None);
+        let shader = made.unwrap();
+        let c = Container::parse(&shader.dxil).unwrap();
+        // Program version: compute (5), shader model 6.6.
+        assert_eq!(c.part(FourCC::DXIL).unwrap().data[..4], [0x66, 0, 5, 0]);
+        assert!(c.part(FourCC::PSG1).is_none());
+        assert_eq!(shader.root_uavs, vec![SLOT_MESH_OUT]);
+        let m = shader.mesh_compute.clone().expect("a mesh program run as a compute program");
+        assert_eq!((m.threads, m.max_vertices, m.max_primitives), (32, 32, 32));
+        // A position row; three indices and a free dword.
+        assert_eq!((m.vertex_dwords, m.primitive_dwords), (4, 4));
+        assert_eq!(m.group_dwords(), 32 * 4 + 32 * 4);
+        let vs = mesh_vs(&m, None).unwrap();
+        let vc = Container::parse(&vs).unwrap();
+        assert_eq!(vc.part(FourCC::DXIL).unwrap().data[..4], [0x66, 0, 1, 0]);
+        // With mesh shaders the same program stays a mesh program.
+        let plain = triangle_mesh(TRIANGLE).unwrap();
+        assert!(plain.mesh_compute.is_none());
+        #[cfg(windows)]
+        if let Ok(mut v) = validator::Validator::load(validator::Validator::default_path().as_deref()) {
+            v.validate(&mut shader.dxil.clone()).unwrap();
+            v.validate(&mut vs.clone()).unwrap();
+        }
     }
 
     /// A primitive export's corners are 9-bit indices: the edge flag above
@@ -2318,6 +2397,7 @@ mod tests {
             root_srvs: l.root_srvs,
             root_uavs: l.root_uavs,
             root_indexed_views: Vec::new(),
+            mesh_compute: None,
         };
         let (root, pso) = host.compute_pipeline(&cs).unwrap();
         // Twelve dwords: the loads below run across the view's end.
@@ -2471,6 +2551,7 @@ mod tests {
                 root_srvs: l.root_srvs,
                 root_uavs: l.root_uavs,
                 root_indexed_views: Vec::new(),
+                mesh_compute: None,
             };
             let (root, pso) = host.compute_pipeline(&cs).unwrap();
             let inputs: Vec<u32> = [
@@ -2887,6 +2968,7 @@ mod barycentric_tests {
             root_srvs: Vec::new(),
             root_uavs: Vec::new(),
             root_indexed_views: Vec::new(),
+            mesh_compute: None,
         };
         validate(&vs);
         // One triangle covers an 8x8 target, with attribute values 2, 6, 10.

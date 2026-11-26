@@ -65,6 +65,12 @@ pub const SLOT_STRIDES_BYTES: u32 = VIEW_ADDRESSES + SLOT_STRIDES_COUNT * 8;
 pub const SLOT_MEMORY: u8 = 254;
 /// See [`SLOT_MEMORY`].
 pub const SLOT_FAULTS: u8 = 253;
+/// A mesh program run as a compute program (`lower::set_mesh_as_compute`)
+/// writes its vertices and primitives into the root UAV `u<SLOT_MESH_OUT>`
+/// in [`ROOT_CBV_SPACE`] (`super::MeshCompute` says where); the vertex
+/// shader that draws them (`super::mesh_vs`) reads it as the root SRV
+/// `t<SLOT_MESH_OUT>`.
+pub const SLOT_MESH_OUT: u8 = 252;
 /// Entries of the [`SLOT_MEMORY`] directory: title addresses below 128 GiB.
 pub const MEMORY_PAGES: u32 = 1 << 21;
 /// In a directory entry's first dword: shaders do not store there by address
@@ -103,6 +109,11 @@ pub const USER_ROOT_ADDRESS: u32 = 0x104;
 /// the group's width. Asked for by the structure builder's programs
 /// ([`crate::spill::is_spilled`]).
 pub const USER_DISPATCH_THREADS_X: u32 = 0x106;
+/// `RootType::Other` code of a user-data dword the host sets at each
+/// dispatch of a mesh program run as a compute program
+/// (`lower::set_mesh_as_compute`): the title's number of the dispatch's
+/// first group (the host runs a mesh dispatch a few groups at a time).
+pub const USER_MESH_GROUP_BASE: u32 = 0x107;
 
 /// `ShaderFlags` bits (metadata) and their `SFI0` feature bits.
 pub(crate) mod flags {

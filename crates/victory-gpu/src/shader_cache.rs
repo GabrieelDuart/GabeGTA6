@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 const FORMAT: u32 = 2;
 
 use victory_pipeline::{Cache, Converter};
-use victory_shader::emit::{HostShader, StaticSampler, UserData};
+use victory_shader::emit::{HostShader, MeshCompute, StaticSampler, UserData};
 use victory_shader::resource::RootIndexedView;
 use victory_shader::{HwStage, RootType};
 
@@ -363,6 +363,20 @@ fn encode(s: &HostShader, source: &str) -> Vec<u8> {
             word(&mut out, value);
         }
     }
+    // A mesh program run as a compute program: where its exports go.
+    match &s.mesh_compute {
+        None => word(&mut out, 0),
+        Some(m) => {
+            word(&mut out, 1);
+            for v in [m.threads, m.max_vertices, m.max_primitives, m.vertex_dwords, m.primitive_dwords] {
+                word(&mut out, v);
+            }
+            for sig in [&m.outputs, &m.prims] {
+                word(&mut out, sig.len() as u32);
+                out.extend(sig);
+            }
+        }
+    }
     out
 }
 
@@ -433,6 +447,19 @@ fn decode(bytes: &[u8]) -> Option<(HostShader, Vec<u8>)> {
             shift: u8::try_from(r.word()?).ok().filter(|&s| s < 32)?,
         });
     }
+    let mesh_compute = match r.word()? {
+        0 => None,
+        1 => Some(MeshCompute {
+            threads: r.word()?,
+            max_vertices: r.word()?,
+            max_primitives: r.word()?,
+            vertex_dwords: r.word()?,
+            primitive_dwords: r.word()?,
+            outputs: r.list()?,
+            prims: r.list()?,
+        }),
+        _ => return None,
+    };
     r.0.is_empty().then_some((
         HostShader {
         stage,
@@ -444,6 +471,7 @@ fn decode(bytes: &[u8]) -> Option<(HostShader, Vec<u8>)> {
         root_srvs,
         root_uavs,
         root_indexed_views,
+            mesh_compute,
         },
         made_by,
     ))
@@ -480,6 +508,15 @@ mod tests {
                 byte_offset: 32,
                 shift: 5,
             }],
+            mesh_compute: Some(MeshCompute {
+                threads: 128,
+                max_vertices: 128,
+                max_primitives: 128,
+                vertex_dwords: 12,
+                primitive_dwords: 8,
+                outputs: vec![1, 2, 3],
+                prims: vec![4, 5],
+            }),
         }
     }
 
