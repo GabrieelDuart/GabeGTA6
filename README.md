@@ -58,6 +58,7 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait
 # Rust, instalado no F: e não no C:
 [Environment]::SetEnvironmentVariable('RUSTUP_HOME', 'F:\Sistema\rust\rustup', 'User')
 [Environment]::SetEnvironmentVariable('CARGO_HOME', 'F:\Sistema\rust\cargo', 'User')
+$env:RUSTUP_HOME = 'F:\Sistema\rust\rustup'; $env:CARGO_HOME = 'F:\Sistema\rust\cargo'
 winget install Rustlang.Rustup
 ```
 
