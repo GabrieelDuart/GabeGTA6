@@ -195,7 +195,7 @@ O GabeGTA6 foi montado em cima do trabalho destes projetos e pessoas:
   avatarmanz: o projeto base deste repositório. O README original dele está em
   [docs/projeto-base.md](docs/projeto-base.md), com os créditos de quem veio
   antes (fxceless, DexNom, Belobug, FQY55kai, myokex, Geckomacabre e outros).
-- **[kelvaroq](https://github.com/fablinoo/kelvaroq)**, de fablinoo: texturas
+- **[kelvaroq](https://github.com/stellarr-studio/kelvaroq)**, de fablinoo: texturas
   num pedaço de cada quadro, espera curta por pipelines.
 - **[cool_fox](https://github.com/DoubleGhosty/cool_fox)** (DoubleGhosty) e
   **[cgbj-reupload](https://github.com/cputroll/cgbj-reupload)** (cputroll),
