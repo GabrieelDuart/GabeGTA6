@@ -221,7 +221,7 @@ static BAKE_SERVED: AtomicU64 = AtomicU64::new(0);
 /// `PS_BakeDecorations_*`), by the first 16 hex digits of their hash as the
 /// frame listings print it. They draw into a 256x256 corner of 2048x2048
 /// targets and name no texture in a table.
-const BAKE_PIXEL_SHADERS: [&str; 4] =
+pub(crate) const BAKE_PIXEL_SHADERS: [&str; 4] =
     ["c0a7fe77b1862e10", "0d1575a396dfe513", "b7cfd8dda91ebb6b", "280967ad158cee0b"];
 
 /// Since the start: early runs of the texture pass, and those of them
@@ -2372,14 +2372,22 @@ impl State {
             user_data: 0,
             slot: 0,
         };
-        // Also within a time per pass: the pass runs on a thread that
-        // records the frame, and making and staging 192 MB of textures took
-        // 1.6-2.2 s of each of the world's first twenty frames (run 20).
-        // The rest waits for the next frames, as it does past the bytes.
-        static SPAN_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        let span = std::time::Duration::from_millis(*SPAN_MS.get_or_init(|| {
-            std::env::var("VICTORY_TEXTURE_STAGE_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(250)
-        }));
+        // Also within a time: the pass runs on a thread that records the
+        // frame, and making and staging 192 MB of textures took 1.6-2.2 s of
+        // each of the world's first twenty frames (run 20). The rest waits
+        // for the next frames, as it does past the bytes.
+        // `VICTORY_TEXTURE_STAGE_PER_FRAME=1` (kelvaroq's patch 0015): the
+        // time is a slice of each frame that all of its passes share, not
+        // 250 ms for every pass, which with thousands of slots due took all
+        // of every frame. `VICTORY_TEXTURE_STAGE_MS` is that slice (6 ms by
+        // default then, 250 a pass otherwise); a pass while another thread
+        // stages, or after the slice is spent, leaves its slots due.
+        static LIMIT: std::sync::OnceLock<(bool, std::time::Duration)> = std::sync::OnceLock::new();
+        let (shared, span) = *LIMIT.get_or_init(|| {
+            let shared = std::env::var_os("VICTORY_TEXTURE_STAGE_PER_FRAME").is_some_and(|v| v == "1");
+            let ms = std::env::var("VICTORY_TEXTURE_STAGE_MS").ok().and_then(|v| v.trim().parse().ok());
+            (shared, std::time::Duration::from_millis(ms.unwrap_or(if shared { 6 } else { 250 })))
+        });
         // A backlog (a scene's first minutes: 22,000 slots due, 2-3 minutes of black
         // surfaces at 192 MB a frame) gets three times the bytes and the time until it
         // drains; `VICTORY_TEXTURE_CATCHUP=0` keeps the plain budget.
@@ -2389,10 +2397,30 @@ impl State {
         // A run made early (`State::early_textures`) has a budget of its
         // own: its bytes on top of what the frame has spent so far.
         // (Not `most`: that is the longest wait between looks, used below.)
+        static USED: std::sync::Mutex<(u64, std::time::Duration)> =
+            std::sync::Mutex::new((0, std::time::Duration::ZERO));
+        let mut used = None;
         let (span, bytes_at_most) = match PASS_BUDGET.get() {
             Some((ms, bytes, _)) => {
                 (std::time::Duration::from_millis(ms), SPENT.load(Ordering::Relaxed).saturating_add(bytes))
             }
+            None if shared => match USED.try_lock() {
+                // Another thread stages: nothing now (the loop below
+                // leaves the slots due).
+                Err(std::sync::TryLockError::WouldBlock) => (std::time::Duration::ZERO, per_frame),
+                taken => {
+                    let mut budget = taken.unwrap_or_else(|e| match e {
+                        std::sync::TryLockError::Poisoned(e) => e.into_inner(),
+                        std::sync::TryLockError::WouldBlock => unreachable!(),
+                    });
+                    if budget.0 != frame {
+                        *budget = (frame, std::time::Duration::ZERO);
+                    }
+                    let left = span.saturating_sub(budget.1);
+                    used = Some(budget);
+                    (left, per_frame)
+                }
+            },
             None => (span, per_frame),
         };
         // (`VICTORY_RESIDENCY=1`, codec-d/cool_fox: the frame's ceiling while
@@ -2411,6 +2439,14 @@ impl State {
             )
         };
         let began = std::time::Instant::now();
+        /// Adds the pass's time to the frame's slice when it ends.
+        struct Spent<'a>(std::sync::MutexGuard<'a, (u64, std::time::Duration)>, std::time::Instant);
+        impl Drop for Spent<'_> {
+            fn drop(&mut self) {
+                self.0.1 += self.1.elapsed();
+            }
+        }
+        let _spent = used.map(|budget| Spent(budget, began));
         BAKE_SERVED.store(0, Ordering::Relaxed);
         let mut served = true;
         for (index, write) in due {

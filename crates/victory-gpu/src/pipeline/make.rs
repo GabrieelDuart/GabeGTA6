@@ -134,6 +134,30 @@ fn wait_budget() -> Duration {
     })
 }
 
+/// Waiting allowed per title frame for the pipelines of a pass the title
+/// runs once (the decoration bake, `crate::draw::BAKE_PIXEL_SHADERS`):
+/// `VICTORY_PIPELINE_WAIT_ONCE_MS`, 500, whatever `VICTORY_PIPELINE_WAIT_MS`
+/// says (kelvaroq's patch 0016: with a few milliseconds for the others, a
+/// frame waits less for pipelines the driver still compiles, and a pass
+/// that runs once is not lost).
+fn once_budget() -> Duration {
+    static BUDGET: OnceLock<Duration> = OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        let millis = std::env::var("VICTORY_PIPELINE_WAIT_ONCE_MS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(500);
+        Duration::from_millis(millis)
+    })
+}
+
+impl Pending {
+    /// Whether this is a pipeline of a pass the title runs once.
+    fn runs_once(&self) -> bool {
+        self.shaders.iter().any(|s| crate::draw::BAKE_PIXEL_SHADERS.contains(&s.hash.as_str()))
+    }
+}
+
 /// As [`wait_budget`], for passes over the screen (`VICTORY_SCREEN_WAIT_MS`,
 /// 10 s; 0: like the others). Below the title's 30 s watchdog.
 fn screen_budget() -> Duration {
@@ -204,7 +228,13 @@ fn shared_budget() -> bool {
 /// Waits for `p` while frame `frame` has budget left.
 fn wait(p: &Pending, frame: u64) {
     let screen = p.screen && screens_first();
-    let budget = if screen { screen_budget() } else { wait_budget() };
+    let budget = if screen {
+        screen_budget()
+    } else if p.runs_once() {
+        once_budget().max(wait_budget())
+    } else {
+        wait_budget()
+    };
     if budget.is_zero() {
         return;
     }

@@ -11,7 +11,7 @@
 # - the Series S profile and a 720p display: the title renders less and keeps its own
 #   upscaler, so its targets fit a 6 GB card;
 # - less of the card is kept for render targets (768 MB, not 3 GB) and for copies of
-#   title buffers (256 MB), and textures are staged 64 MB and 33 ms a frame at most, and textures stop at 85 % of the card's budget;
+#   title buffers (256 MB), and textures are staged 64 MB and 8 ms a frame at most, and a frame waits 4 ms for pipelines, and textures stop at 85 % of the card's budget;
 # - six translating threads instead of eight (eight cores here, the title needs some);
 # - on Windows 10 the DirectX 12 Agility SDK must sit in target\<build>\D3D12 (see
 #   docs/gtx1060.md): without it no pipeline can be made and the screen stays black.
@@ -35,10 +35,16 @@ $settings = @{
     VICTORY_CARD_ROOM_FOR_TARGETS_MB = '768'
     VICTORY_CARD_BUFFERS_MB = '256'
     VICTORY_TEXTURE_ROOM_PERCENT = '85'
-    # Textures staged a frame: at most 64 MB and 33 ms (the defaults, 192 MB and 250 ms,
-    # can take every frame; kelvaroq's profile for small cards uses 64 MB).
+    # Textures staged a frame: at most 64 MB, in a slice of 8 ms of each frame that all
+    # its passes share (the defaults, 192 MB and 250 ms a pass, can take every frame;
+    # kelvaroq's patch 0015 and its profile for small cards).
     VICTORY_TEXTURE_STAGE_MB = '64'
-    VICTORY_TEXTURE_STAGE_MS = '33'
+    VICTORY_TEXTURE_STAGE_PER_FRAME = '1'
+    VICTORY_TEXTURE_STAGE_MS = '8'
+    # A frame waits 4 ms at most for pipelines still being compiled (500 by default):
+    # their draws are left out until they are ready, the decoration bake still gets
+    # its 500 ms (kelvaroq's patch 0016).
+    VICTORY_PIPELINE_WAIT_MS = '4'
 }
 if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080' }
 if ($Safe) {
