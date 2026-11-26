@@ -45,6 +45,10 @@ $settings = @{
     # their draws are left out until they are ready, the decoration bake still gets
     # its 500 ms (kelvaroq's patch 0016).
     VICTORY_PIPELINE_WAIT_MS = '4'
+    # The ray-tracing structures are not built (VICTORY_BVH_BUILDER): the ~1,000 programs
+    # that shade their hits are not compiled (from codec-d/cool_fox via cgbj-reupload).
+    VICTORY_RT_RESOLVE = '0'
+    VICTORY_ACTIVATE_RAYS = '0'
 }
 if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080' }
 if ($Safe) {

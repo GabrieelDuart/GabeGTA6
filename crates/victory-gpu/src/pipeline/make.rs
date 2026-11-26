@@ -43,6 +43,37 @@ pub(crate) struct Pending {
     used: AtomicBool,
     /// A pass over the screen ([`GraphicsState::screen_pass`]).
     screen: bool,
+    /// Why this pipeline is never made ([`left_out`]).
+    left_out: Option<&'static str>,
+}
+
+fn named(shaders: &[Arc<Shader>], name: &[u8]) -> bool {
+    shaders
+        .iter()
+        .any(|s| s.stage == "compute" && s.container.windows(name.len()).any(|w| w == name))
+}
+
+/// Programs that do nothing useful without the ray-tracing structures,
+/// which are not built unless `VICTORY_BVH_BUILDER=1`: about 1,000
+/// `CS_RaytracingResolve` programs, which shade no hits, and the screen
+/// probes' `CS_ScreenProbes_ActivateRays`. With `VICTORY_RT_RESOLVE=0` and
+/// `VICTORY_ACTIVATE_RAYS=0` (from codec-d/cool_fox 8cc31ab, by way of
+/// cputroll/cgbj-reupload) they are not made, so they do not hold up the
+/// pipelines the frame needs while a cold cache compiles (a small CPU).
+fn left_out(shaders: &[Arc<Shader>]) -> Option<&'static str> {
+    static SKIP: OnceLock<(bool, bool)> = OnceLock::new();
+    let (resolve, activate) = *SKIP.get_or_init(|| {
+        let builder = std::env::var_os("VICTORY_BVH_BUILDER").is_some_and(|v| v == "1");
+        let off = |name: &str| std::env::var_os(name).is_some_and(|v| v == "0");
+        (!builder && off("VICTORY_RT_RESOLVE"), !builder && off("VICTORY_ACTIVATE_RAYS"))
+    });
+    if resolve && named(shaders, b"CS_RaytracingResolve") {
+        return Some("shades ray-tracing hits without the structures, left out");
+    }
+    if activate && named(shaders, b"CS_ScreenProbes_ActivateRays") {
+        return Some("activates rays without the structures, left out");
+    }
+    None
 }
 
 // SAFETY: D3D12 objects are free-threaded; the graphics state (whose input
@@ -61,6 +92,7 @@ impl Pending {
         key.update(graphics.as_ref().map(|g| g.describe()).unwrap_or_default().as_bytes());
         Pending {
             screen: graphics.as_ref().is_some_and(|g| g.screen_pass()),
+            left_out: left_out(&shaders),
             shaders,
             graphics,
             queue_state: AtomicU8::new(NOT_QUEUED),
@@ -184,6 +216,9 @@ pub(crate) fn waiting() -> u64 {
 /// The host pipeline if it is made (or is made within the frame's budget);
 /// queues it on first use.
 pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
+    if p.left_out.is_some() {
+        return None;
+    }
     // A still-pending pipeline was requested by the title too. Prewarm it
     // on the next launch, even if this run never got to use it.
     if !p.used.load(Ordering::Relaxed) && !p.used.swap(true, Ordering::Relaxed) {
@@ -199,6 +234,9 @@ pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
 /// Makes `p` on this thread if it is not made yet (waiting for a worker
 /// that is making it); whether it has a host pipeline.
 pub(crate) fn now(p: &Arc<Pending>) -> bool {
+    if p.left_out.is_some() {
+        return false;
+    }
     p.make();
     p.made.get().is_some_and(|made| made.is_some())
 }
@@ -206,6 +244,9 @@ pub(crate) fn now(p: &Arc<Pending>) -> bool {
 /// At the title's creation of a pipeline: starts it at once if an earlier
 /// run drew with it (during loading, so the world's first frames find it).
 pub(crate) fn early(p: &Arc<Pending>) {
+    if p.left_out.is_some() {
+        return;
+    }
     if !p.shaders.is_empty() && super::library::wanted_early(&p.key) {
         super::library::EARLY.fetch_add(1, Ordering::Relaxed);
         start(p, EARLY);
@@ -396,6 +437,9 @@ static AVAILABLE: Condvar = Condvar::new();
 /// Start or promote work for a draw without waiting behind the entire early
 /// list. Queue changes and worker claims happen under the same lock.
 fn start(p: &Arc<Pending>, priority: u8) {
+    if p.left_out.is_some() {
+        return;
+    }
     if p.queue_state.load(Ordering::Relaxed) >= priority {
         return;
     }
