@@ -1320,6 +1320,11 @@ impl State {
         if kind == victory_shader::emit::USER_DISPATCH_THREADS_X {
             return 0;
         }
+        // The first group of a mesh dispatch run as a compute program: set
+        // for each batch (`mesh_as_compute`).
+        if kind == victory_shader::emit::USER_MESH_GROUP_BASE {
+            return 0;
+        }
         if kind == USER_ROOT_ADDRESS || kind == USER_ROOT_ADDRESS + 1 {
             return match self.roots_ref(compute).get(usize::from(slot)) {
                 Some(&Root::View(address)) if kind == USER_ROOT_ADDRESS => address as u32,
@@ -1775,6 +1780,10 @@ impl State {
                 }
             }
             for &(slot, param) in &stage.root_uavs {
+                if slot == victory_shader::emit::SLOT_MESH_OUT {
+                    // Ours: bound by `mesh_as_compute`.
+                    continue;
+                }
                 if slot == victory_shader::emit::SLOT_FAULTS {
                     // Ours: where shaders note the pages they found empty.
                     if let Some(m) = &memory {
@@ -3260,6 +3269,17 @@ impl State {
         self.window = None;
         #[cfg(feature = "diagnostics")]
         self.trace("mesh", x, 0);
+        if let Some(p) = crate::pipeline::host_pipeline(self.pipeline as This)
+            && let Some(m) = p.mesh_compute.as_deref()
+        {
+            let ran = mesh_test() != 1 && mesh_kept(self.pipeline) && self.mesh_as_compute(list, x, p, m);
+            if !ran {
+                DROPPED.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "diagnostics")]
+                dropped(self.pipeline);
+            }
+            return;
+        }
         let ran = mesh_test() != 1
             && mesh_kept(self.pipeline)
             && self.prepare_for(list, false, true)
@@ -3291,6 +3311,224 @@ impl State {
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
+    }
+
+    /// A mesh dispatch on a host without mesh shaders
+    /// (`crate::pipeline::host::MeshAsCompute`), in batches of groups whose
+    /// records fit our buffer: the mesh shader as a compute program, with
+    /// the title's graphics bindings, writes each group's vertices and
+    /// triangles; then the generated vertex shader draws three vertices
+    /// for every triangle a group may make (those the program culled have
+    /// no area). False if nothing could be drawn.
+    fn mesh_as_compute(
+        &mut self,
+        list: &HostList,
+        x: u32,
+        p: &HostPipeline,
+        m: &crate::pipeline::host::MeshAsCompute,
+    ) -> bool {
+        let Some((buffer, size)) = mesh_out() else {
+            return false;
+        };
+        let group = u64::from(m.group_dwords.max(1)) * 4;
+        if group > size {
+            once!(group, "a mesh group's records do not fit the buffer for them: the mesh dispatch is dropped");
+            return false;
+        }
+        let batch = (size / group).min(65_535) as u32;
+        let x = if x > 65_535 * 64 {
+            once!(x, "a mesh dispatch of more groups than the host takes: cut");
+            65_535 * 64
+        } else {
+            x
+        };
+        list.keep(buffer);
+        // SAFETY: a live buffer.
+        let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+        let out = m
+            .compute
+            .stages
+            .first()
+            .and_then(|s| s.root_uavs.iter().find(|r| r.0 == victory_shader::emit::SLOT_MESH_OUT))
+            .map(|r| r.1);
+        let first_word = compute_word(&m.compute, victory_shader::emit::USER_MESH_GROUP_BASE);
+        let l = &list.list;
+        #[cfg(feature = "diagnostics")]
+        list.note_op(|| self.op_text(format!("mesh {x} as compute"), false));
+        let mut first = 0;
+        while first < x {
+            let n = (x - first).min(batch);
+            // The program reads what the title bound for the draw: its
+            // graphics roots stand in for the compute ones while it binds.
+            std::mem::swap(&mut self.compute, &mut self.graphics);
+            let bound = self.bind(list, &m.compute, true);
+            std::mem::swap(&mut self.compute, &mut self.graphics);
+            if !bound {
+                return first > 0;
+            }
+            // SAFETY: an open list with everything set; the buffer lives
+            // as long as the process and the list holds it. The buffer
+            // begins each batch in the common state, which a write
+            // promotes to unordered access.
+            unsafe {
+                if let Some(param) = out {
+                    l.SetComputeRootUnorderedAccessView(param, gpu);
+                }
+                if let Some((param, word)) = first_word {
+                    l.SetComputeRoot32BitConstant(param, first, word);
+                }
+                l.Dispatch(n, 1, 1);
+                l.ResourceBarrier(&[crate::host::transition(
+                    buffer,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                )]);
+            }
+            let drawn = self.prepare_for(list, false, true);
+            if drawn {
+                self.mesh_scissor(list, true);
+                // SAFETY: as above.
+                unsafe {
+                    l.SetGraphicsRootShaderResourceView(m.records, gpu);
+                    l.IASetPrimitiveTopology(windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    l.DrawInstanced(n * m.max_primitives * 3, 1, 0, 0);
+                }
+                self.mesh_scissor(list, false);
+            }
+            // SAFETY: as above.
+            unsafe {
+                l.ResourceBarrier(&[crate::host::transition(
+                    buffer,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COMMON,
+                )]);
+            }
+            if !drawn {
+                return first > 0;
+            }
+            first += n;
+        }
+        // The title's own topology for its next draws.
+        if self.topology_set {
+            self.set_topology(list, self.topology);
+        }
+        self.drew(list, Some(p));
+        self.drew(list, Some(&m.compute));
+        DRAWN.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// [`Self::mesh_as_compute`] for `max` mesh records `stride` bytes apart
+    /// from `at` in `bounded`, clamped and readable as indirect arguments:
+    /// for each, a shader of ours writes the compute dispatch and the draw
+    /// (`crate::mesh_args`) from the record on the GPU.
+    /// shortcut: the groups of a record past what the buffer for their
+    /// records holds (`VICTORY_MESH_OUT_MB`) are not drawn.
+    #[allow(clippy::too_many_arguments)]
+    fn mesh_as_compute_indirect(
+        &mut self,
+        list: &HostList,
+        p: &HostPipeline,
+        m: &crate::pipeline::host::MeshAsCompute,
+        bounded: &ID3D12Resource,
+        at: u64,
+        stride: u32,
+        max: u32,
+    ) -> bool {
+        let Some((buffer, size)) = mesh_out() else {
+            return false;
+        };
+        let capacity = (size / (u64::from(m.group_dwords.max(1)) * 4)).min(65_535) as u32;
+        if capacity == 0 {
+            once!("a mesh group's records do not fit the buffer for them: the mesh dispatch is dropped");
+            return false;
+        }
+        let (Some(dispatch), Some(draw)) = (host_signature(2, 12), host_signature(0, 16)) else {
+            return false;
+        };
+        list.keep(buffer);
+        // SAFETY: live buffers.
+        let (gpu, records) = unsafe { (buffer.GetGPUVirtualAddress(), bounded.GetGPUVirtualAddress()) };
+        let out = m
+            .compute
+            .stages
+            .first()
+            .and_then(|s| s.root_uavs.iter().find(|r| r.0 == victory_shader::emit::SLOT_MESH_OUT))
+            .map(|r| r.1);
+        let first_word = compute_word(&m.compute, victory_shader::emit::USER_MESH_GROUP_BASE);
+        let l = &list.list;
+        let arguments = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        let read = D3D12_RESOURCE_STATES(arguments.0 | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE.0);
+        #[cfg(feature = "diagnostics")]
+        list.note_op(|| self.op_text(format!("indirect mesh {max} as compute"), false));
+        for i in 0..max {
+            let record = records + at + u64::from(i) * u64::from(stride);
+            // SAFETY: an open list; the clamp left `bounded` readable as
+            // arguments, as it is again after this.
+            unsafe { l.ResourceBarrier(&[crate::host::transition(bounded, arguments, read)]) };
+            let args = crate::mesh_args::write(list, record, m.max_primitives, capacity);
+            // SAFETY: as above.
+            unsafe { l.ResourceBarrier(&[crate::host::transition(bounded, read, arguments)]) };
+            // Our pipeline replaced the list's.
+            self.host_pipeline = 0;
+            self.host_roots[1] = 0;
+            let Some(args) = args else {
+                return i > 0;
+            };
+            std::mem::swap(&mut self.compute, &mut self.graphics);
+            let bound = self.bind(list, &m.compute, true);
+            std::mem::swap(&mut self.compute, &mut self.graphics);
+            if !bound {
+                crate::mesh_args::done(list);
+                return i > 0;
+            }
+            // SAFETY: an open list with everything set; our buffers live as
+            // long as the process and the list holds them.
+            unsafe {
+                if let Some(param) = out {
+                    l.SetComputeRootUnorderedAccessView(param, gpu);
+                }
+                if let Some((param, word)) = first_word {
+                    l.SetComputeRoot32BitConstant(param, 0, word);
+                }
+                l.ExecuteIndirect(&dispatch, 1, args, crate::mesh_args::DISPATCH_AT, None::<&ID3D12Resource>, 0);
+                l.ResourceBarrier(&[crate::host::transition(
+                    buffer,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                )]);
+            }
+            let drawn = self.prepare_for(list, false, true);
+            if drawn {
+                self.mesh_scissor(list, true);
+                // SAFETY: as above.
+                unsafe {
+                    l.SetGraphicsRootShaderResourceView(m.records, gpu);
+                    l.IASetPrimitiveTopology(windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    l.ExecuteIndirect(&draw, 1, args, crate::mesh_args::DRAW_AT, None::<&ID3D12Resource>, 0);
+                }
+                self.mesh_scissor(list, false);
+            }
+            // SAFETY: as above.
+            unsafe {
+                l.ResourceBarrier(&[crate::host::transition(
+                    buffer,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COMMON,
+                )]);
+            }
+            crate::mesh_args::done(list);
+            if !drawn {
+                return i > 0;
+            }
+        }
+        if self.topology_set {
+            self.set_topology(list, self.topology);
+        }
+        self.drew(list, Some(p));
+        self.drew(list, Some(&m.compute));
+        DRAWN.fetch_add(1, Ordering::Relaxed);
+        true
     }
 
     /// The walls trace (`crate::host::walls_trace`): one log line per
@@ -4119,6 +4357,20 @@ impl State {
                 (bounded, 0)
             }
         };
+        if kind == MESH
+            && let Some(m) = p.mesh_compute.as_deref()
+        {
+            if counter.is_some() {
+                once!("an indirect mesh dispatch with a count buffer on a host without mesh shaders: dropped");
+                why("a count buffer, with mesh shaders run as compute programs");
+                return false;
+            }
+            let ran = self.mesh_as_compute_indirect(list, p, m, &bounded, at, stride, max);
+            if !ran {
+                why("mesh shaders run as compute programs: not bound");
+            }
+            return ran;
+        }
         let ran = match kind {
             DRAW | INDEXED => self.prepare(list, kind == INDEXED),
             MESH => self.prepare_for(list, false, true),
@@ -4185,6 +4437,33 @@ fn thread_dimensions() -> bool {
 /// The groups of `size` threads that hold `threads`.
 fn dispatch_groups(threads: [u32; 3], size: [u32; 3]) -> [u32; 3] {
     std::array::from_fn(|i| threads[i].div_ceil(size[i]))
+}
+
+/// The buffer mesh shaders run as compute programs write their records to
+/// (`DrawState::mesh_as_compute`), and its size: `VICTORY_MESH_OUT_MB`
+/// (64 by default). One for all lists: each batch leaves it in the common
+/// state, and mesh draws run on the one direct queue.
+fn mesh_out() -> Option<(&'static ID3D12Resource, u64)> {
+    struct Out(Option<(ID3D12Resource, u64)>);
+    // SAFETY: a buffer the process never releases; D3D12 objects may be
+    // used from any thread.
+    unsafe impl Send for Out {}
+    // SAFETY: as above.
+    unsafe impl Sync for Out {}
+    static OUT: std::sync::OnceLock<Out> = std::sync::OnceLock::new();
+    let out = OUT.get_or_init(|| {
+        let mb = std::env::var("VICTORY_MESH_OUT_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(64)
+            .clamp(1, 1024);
+        let size = mb << 20;
+        Out(crate::host::host().and_then(|h| h.uav_buffer(size)).map(|b| (b, size)))
+    });
+    if out.0.is_none() {
+        once!("no buffer for mesh shaders run as compute programs: their draws are dropped");
+    }
+    out.0.as_ref().map(|(b, size)| (b, *size))
 }
 
 /// Where a compute pipeline's user data has a word the host computes: the

@@ -15,8 +15,8 @@
 # - six translating threads instead of eight (eight cores here, the title needs some);
 # - on Windows 10 the DirectX 12 Agility SDK must sit in target\<build>\D3D12 (see
 #   docs/gtx1060.md): without it no pipeline can be made and the screen stays black.
-# The GTX 1060 has no mesh shaders: until the mesh fallback is in (docs/gtx1060.md),
-# what the title draws with mesh programs is left out.
+# The GTX 1060 has no mesh shaders: its mesh programs run as compute programs whose
+# triangles a vertex shader draws (docs/gtx1060.md, VICTORY_MESH_OUT_MB for the buffer).
 param(
     [Parameter(Mandatory)][string]$Exe,
     [switch]$Safe,

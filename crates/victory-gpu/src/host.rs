@@ -1054,6 +1054,13 @@ fn create() -> windows::core::Result<Host> {
             let amd = crate::indirect::amd(&device);
             victory_shader::emit::set_host_rdna(amd && o1.WaveLaneCountMin == 32 && o1.WaveLaneCountMax == 64);
         }
+        // Before any shader is translated: the translation (and its cache
+        // entry) differs.
+        let as_compute = mesh_as_compute(&device);
+        victory_shader::emit::set_mesh_as_compute(as_compute);
+        if as_compute {
+            tracing::info!("mesh shaders run as compute programs whose triangles a vertex shader draws");
+        }
         let messages = debug
             .then(|| device.cast::<ID3D12InfoQueue>().ok())
             .flatten();
@@ -4115,31 +4122,7 @@ impl Host {
     pub(crate) fn mesh_shaders(&self) -> bool {
         static MESH: OnceLock<bool> = OnceLock::new();
         *MESH.get_or_init(|| {
-            let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
-            let mut model = D3D12_FEATURE_DATA_SHADER_MODEL {
-                HighestShaderModel: D3D_SHADER_MODEL_6_6,
-            };
-            // SAFETY: each query writes its own structure of the given size.
-            let ok = unsafe {
-                self.device
-                    .CheckFeatureSupport(
-                        D3D12_FEATURE_D3D12_OPTIONS7,
-                        (&raw mut options).cast(),
-                        size_of_val(&options) as u32,
-                    )
-                    .is_ok()
-                    && self
-                        .device
-                        .CheckFeatureSupport(
-                            D3D12_FEATURE_SHADER_MODEL,
-                            (&raw mut model).cast(),
-                            size_of_val(&model) as u32,
-                        )
-                        .is_ok()
-            };
-            let mesh = ok
-                && options.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED
-                && model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_6.0;
+            let mesh = mesh_support(&self.device);
             tracing::info!(mesh, "host mesh shader support");
             mesh
         })
@@ -10088,6 +10071,42 @@ fn in_flight(history: &[D3D12_AUTO_BREADCRUMB_OP], markers: &[(u32, String)], do
         text.push_str(&format!("; command {i} (op {}): {marker}", op.0));
     }
     text
+}
+
+/// Whether `device` runs mesh shaders at shader model 6.6 (translated mesh
+/// shaders need both).
+fn mesh_support(device: &ID3D12Device) -> bool {
+    let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
+    let mut model = D3D12_FEATURE_DATA_SHADER_MODEL {
+        HighestShaderModel: D3D_SHADER_MODEL_6_6,
+    };
+    // SAFETY: each query writes its own structure of the given size.
+    let ok = unsafe {
+        device
+            .CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS7,
+                (&raw mut options).cast(),
+                size_of_val(&options) as u32,
+            )
+            .is_ok()
+            && device
+                .CheckFeatureSupport(
+                    D3D12_FEATURE_SHADER_MODEL,
+                    (&raw mut model).cast(),
+                    size_of_val(&model) as u32,
+                )
+                .is_ok()
+    };
+    ok && options.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED
+        && model.HighestShaderModel.0 >= D3D_SHADER_MODEL_6_6.0
+}
+
+/// Whether mesh shaders are translated as compute programs whose triangles
+/// a vertex shader then draws (`victory_shader::emit::set_mesh_as_compute`):
+/// where the host has no mesh shaders (a GeForce GTX 10, a Radeon RX 5000),
+/// or with `VICTORY_MESH_AS_COMPUTE=1` anywhere (to compare the two).
+fn mesh_as_compute(device: &ID3D12Device) -> bool {
+    std::env::var("VICTORY_MESH_AS_COMPUTE").map_or_else(|_| !mesh_support(device), |v| v == "1")
 }
 
 pub(crate) fn transition(

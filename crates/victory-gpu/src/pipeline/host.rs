@@ -398,6 +398,36 @@ pub(crate) struct HostPipeline {
     /// listing (empty for compute).
     #[cfg_attr(not(feature = "diagnostics"), allow(dead_code))]
     pub(crate) state: String,
+    /// A mesh pipeline on a host without mesh shaders: the compute program
+    /// its mesh shader became, which writes the triangles for this
+    /// pipeline (the generated vertex shader and the title's pixel shader)
+    /// to draw (`victory_shader::emit::MeshCompute`).
+    pub(crate) mesh_compute: Option<Box<MeshAsCompute>>,
+}
+
+/// The compute half of a mesh pipeline drawn without mesh shaders.
+pub(crate) struct MeshAsCompute {
+    /// The mesh shader as a compute program: its root UAV
+    /// `victory_shader::emit::SLOT_MESH_OUT` takes the records.
+    pub(crate) compute: HostPipeline,
+    /// The draw's root parameter for the records (`t252`, vertex stage).
+    pub(crate) records: u32,
+    /// Triangles a group may make: the draw has three vertices for each.
+    pub(crate) max_primitives: u32,
+    /// The dwords of records a group writes.
+    pub(crate) group_dwords: u32,
+}
+
+/// What `HostPipeline::build` makes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The title's pipeline as it is.
+    Plain,
+    /// The compute program a mesh shader became.
+    MeshCompute,
+    /// The draw of what that program wrote: the generated vertex shader
+    /// and the title's pixel shader (and the compute half with it).
+    MeshDraw,
 }
 
 /// Logs a pipeline that gets no host pipeline, once per reason.
@@ -415,12 +445,27 @@ impl HostPipeline {
     /// A host pipeline for vertex and pixel shaders with the graphics
     /// state `g`, or for one compute shader.
     pub(crate) fn new(shaders: &[Arc<Shader>], g: Option<&GraphicsState>) -> Option<HostPipeline> {
+        if let Some(ms) = shaders.iter().find(|s| s.stage == "mesh")
+            && !host()?.mesh_shaders()
+        {
+            // Translated as a compute program (`set_mesh_as_compute`, on
+            // where the host has no mesh shaders): drawn in two steps.
+            if ms.translated().is_some_and(|t| t.host.mesh_compute.is_some()) {
+                return Self::build(shaders, g, Mode::MeshDraw);
+            }
+            return refuse("the host GPU has no mesh shaders (or no shader model 6.6)", shaders);
+        }
+        Self::build(shaders, g, Mode::Plain)
+    }
+
+    fn build(shaders: &[Arc<Shader>], g: Option<&GraphicsState>, mode: Mode) -> Option<HostPipeline> {
         // For the report when the host device is removed: what this thread
         // has in the library from here on.
         super::library::label(format!("{shaders:?}"));
         let find = |stage| shaders.iter().find(|s| s.stage == stage);
-        let compute = match shaders {
-            [cs] if cs.stage == "compute" => Some(cs),
+        let compute = match (mode, shaders) {
+            (Mode::MeshCompute, _) => Some(find("mesh")?),
+            (_, [cs]) if cs.stage == "compute" => Some(cs),
             _ => None,
         };
         if compute.is_none()
@@ -436,6 +481,13 @@ impl HostPipeline {
         let mesh = find("mesh");
         let stages = if let Some(cs) = compute {
             vec![(cs, D3D12_SHADER_VISIBILITY_ALL)]
+        } else if mode == Mode::MeshDraw {
+            // The generated vertex shader binds only the records, after
+            // these.
+            find("pixel")
+                .map(|ps| (ps, D3D12_SHADER_VISIBILITY_PIXEL))
+                .into_iter()
+                .collect()
         } else {
             let first = match (mesh, find("vertex")) {
                 (Some(ms), _) => (ms, D3D12_SHADER_VISIBILITY_MESH),
@@ -446,7 +498,7 @@ impl HostPipeline {
             stages.extend(find("pixel").map(|ps| (ps, D3D12_SHADER_VISIBILITY_PIXEL)));
             stages
         };
-        if mesh.is_some() && !host()?.mesh_shaders() {
+        if mode == Mode::Plain && mesh.is_some() && !host()?.mesh_shaders() {
             return refuse("the host GPU has no mesh shaders (or no shader model 6.6)", shaders);
         }
         {
@@ -525,6 +577,7 @@ impl HostPipeline {
                     // address and its fault notes.
                     let ours = if uav {
                         slot == victory_shader::emit::SLOT_FAULTS
+                            || slot == victory_shader::emit::SLOT_MESH_OUT
                     } else {
                         slot == victory_shader::emit::SLOT_STRIDES
                             || slot == victory_shader::emit::SLOT_MEMORY
@@ -594,6 +647,22 @@ impl HostPipeline {
             }
             bound.push(stage);
         }
+        // The records the mesh shader's compute program wrote, for the
+        // generated vertex shader: a root descriptor of our buffer.
+        let records = params.len() as u32;
+        if mode == Mode::MeshDraw {
+            params.push(D3D12_ROOT_PARAMETER1 {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_SRV,
+                Anonymous: D3D12_ROOT_PARAMETER1_0 {
+                    Descriptor: D3D12_ROOT_DESCRIPTOR1 {
+                        ShaderRegister: u32::from(victory_shader::emit::SLOT_MESH_OUT),
+                        RegisterSpace: ROOT_CBV_SPACE,
+                        Flags: D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+            });
+        }
         let (root, root_blob) = match root_signature(&host.device, &params, &samplers, compute.is_some()) {
             Ok(root) => root,
             Err(e) => {
@@ -646,6 +715,7 @@ impl HostPipeline {
                 inputs: Vec::new(),
                 rects: false,
                 state: String::new(),
+                mesh_compute: None,
             });
         }
         let Some(g) = g else {
@@ -667,6 +737,17 @@ impl HostPipeline {
             false
         };
         let state = g.describe();
+        if mode == Mode::MeshDraw {
+            return mesh_draw(shaders, g, MeshDrawParts {
+                root,
+                root_blob: &root_blob,
+                ps: code(0),
+                stages: bound,
+                records,
+                depth_bounds,
+                state,
+            });
+        }
         if mesh.is_some() {
             // "triangles": the stream names its topology since it did not
             // load from the library without one (see `mesh_pipeline`); a
@@ -699,6 +780,7 @@ impl HostPipeline {
                 inputs: Vec::new(),
                 rects: false,
                 state: String::new(),
+                mesh_compute: None,
             });
         }
 
@@ -814,6 +896,7 @@ impl HostPipeline {
             slots: g.slots(),
             inputs: g.elements(),
             rects: rect_gs.is_some(),
+            mesh_compute: None,
             state: {
                 let (d, r, b) = (&g.depth, &g.rasterizer, &g.blend.RenderTarget[0]);
                 let face = |f: &D3D12_DEPTH_STENCILOP_DESC| {
@@ -844,6 +927,98 @@ impl HostPipeline {
             },
         })
     }
+}
+
+/// What `HostPipeline::build` has made for the draw half of a mesh pipeline.
+struct MeshDrawParts<'a> {
+    root: ID3D12RootSignature,
+    root_blob: &'a [u8],
+    /// The title's pixel shader (none: a depth-only draw).
+    ps: D3D12_SHADER_BYTECODE,
+    stages: Vec<Stage>,
+    records: u32,
+    depth_bounds: bool,
+    state: String,
+}
+
+/// The draw half of a mesh pipeline on a host without mesh shaders: the
+/// vertex shader `victory_shader::emit::mesh_vs` generates from the mesh
+/// shader's records, the title's pixel shader and graphics state, a
+/// triangle list without vertex input; with the compute half made first.
+fn mesh_draw(shaders: &[Arc<Shader>], g: &GraphicsState, parts: MeshDrawParts) -> Option<HostPipeline> {
+    let host = host()?;
+    let compute = HostPipeline::build(shaders, Some(g), Mode::MeshCompute)?;
+    let ms = compute.stages.first()?.translated().host.mesh_compute.as_ref()?;
+    let (max_primitives, group_dwords) = (ms.max_primitives, ms.group_dwords());
+    let ps = code_bytes(&parts.ps);
+    let vs = match victory_shader::emit::mesh_vs(ms, (!ps.is_empty()).then_some(&ps[..])) {
+        Ok(vs) => vs,
+        Err(e) => {
+            tracing::warn!(error = %e, ?shaders, "no vertex shader for a mesh shader drawn as a compute program");
+            return None;
+        }
+    };
+    let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+        // SAFETY: a borrowed pointer the description never releases.
+        pRootSignature: unsafe { std::mem::transmute_copy(&parts.root) },
+        VS: D3D12_SHADER_BYTECODE {
+            pShaderBytecode: vs.as_ptr().cast(),
+            BytecodeLength: vs.len(),
+        },
+        PS: parts.ps,
+        BlendState: host_blend(&g.blend, &g.targets),
+        SampleMask: g.sample_mask,
+        RasterizerState: g.rasterizer,
+        DepthStencilState: g.depth,
+        InputLayout: D3D12_INPUT_LAYOUT_DESC::default(),
+        IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+        PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        NumRenderTargets: g.targets.NumRenderTargets,
+        RTVFormats: g.targets.RTFormats,
+        DSVFormat: g.depth_format,
+        SampleDesc: g.samples,
+        ..Default::default()
+    };
+    let name = super::library::name("mesh as compute", parts.root_blob, &[&vs[..], &ps[..]], &parts.state);
+    let made = if parts.depth_bounds {
+        graphics_depth_bounds_pipeline(&host.device, &parts.root, &desc, g.depth1(), &name)
+    } else {
+        super::library::pipeline(
+            &name,
+            // SAFETY: the description points at live data.
+            |library, name| unsafe { library.LoadGraphicsPipeline(name, &desc) },
+            // SAFETY: as above.
+            || unsafe { host.device.CreateGraphicsPipelineState(&desc) },
+        )
+    };
+    let pso = match made {
+        Ok(pso) => pso,
+        Err(e) => {
+            tracing::warn!(error = %e, ?shaders, "host pipeline for a mesh shader drawn as a compute program refused");
+            host.log_messages();
+            return None;
+        }
+    };
+    tracing::info!(?shaders, "host mesh pipeline as a compute program and a draw");
+    crate::host::name(&pso, || format!("{shaders:?} drawn"));
+    Some(HostPipeline {
+        compute: false,
+        mesh: true,
+        pso,
+        root: parts.root,
+        stages: parts.stages,
+        name: format!("{shaders:?}"),
+        slots: 0,
+        inputs: Vec::new(),
+        rects: false,
+        state: String::new(),
+        mesh_compute: Some(Box::new(MeshAsCompute {
+            compute,
+            records: parts.records,
+            max_primitives,
+            group_dwords,
+        })),
+    })
 }
 
 /// A stream subobject: its type, then its description, pointer-aligned.
