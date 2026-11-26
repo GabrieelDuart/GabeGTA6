@@ -44,6 +44,19 @@ Aqui ele foi adaptado para uma NVIDIA pequena:
 | Disco | uns 10 GB para as ferramentas e a compilação, mais o cache de shaders (vários GB) |
 | O jogo | a sua própria cópia, tirada do seu Xbox Series |
 
+## Executável pronto (sem compilar)
+
+O GitHub compila o `victory.exe` sozinho a cada mudança no `main`
+(`.github/workflows/build-1060.yml`) e gera um `GabeGTA6-windows.zip` com o
+executável, o Agility SDK, os scripts e a documentação. Sem nenhum arquivo do jogo.
+
+- Na primeira vez, em **Actions** no GitHub, clique em *"I understand my
+  workflows, go ahead and enable them"*.
+- O .zip fica em **Actions > GabeGTA6 para Windows > a execução mais nova >
+  Artifacts**. Uma tag `v0.1.0` também cria um **Release** com ele.
+- Com o .zip, pule a instalação e o passo 2 abaixo: extraia no F:, e siga do
+  passo 3 em diante.
+
 ## Como fazer rodar no PC
 
 Tudo no PowerShell. Os caminhos abaixo usam o disco `F:`; troque se quiser outro.
