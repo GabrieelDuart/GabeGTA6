@@ -1,0 +1,55 @@
+name: GabeGTA6 para Windows
+
+# Compila o victory.exe (perfil diag, o que o play-1060.ps1 usa) com o Agility SDK
+# e os scripts, num .zip pronto para baixar. Sem nenhum arquivo do jogo.
+# - A cada push no main: o .zip fica em Actions > a execução > Artifacts.
+# - A cada tag v* (por exemplo v0.1.0): também vira um Release com o .zip.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-1060-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: victory.exe para a GTX 1060
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Compilar
+        run: cargo build --locked --profile diag -p victory --features diagnostics
+      - name: Agility SDK
+        shell: pwsh
+        run: scripts\get-agility-sdk.ps1 -Build diag
+      - name: Empacotar
+        shell: pwsh
+        run: |
+          $out = 'GabeGTA6'
+          New-Item -ItemType Directory -Force "$out\target\diag" | Out-Null
+          Copy-Item target\diag\victory.exe "$out\target\diag\"
+          Copy-Item -Recurse target\diag\D3D12 "$out\target\diag\"
+          Copy-Item -Recurse scripts, docs "$out\"
+          Copy-Item README.md, LICENSE, victory.example.toml "$out\"
+          Compress-Archive -Path "$out\*" -DestinationPath GabeGTA6-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GabeGTA6-windows
+          path: GabeGTA6-windows.zip
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: GabeGTA6-windows.zip
