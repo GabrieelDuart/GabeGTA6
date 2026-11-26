@@ -33,34 +33,101 @@ Aqui ele foi adaptado para uma NVIDIA pequena:
   são compilados.
 - **Nada no C:.** Caches e saves ficam ao lado da pasta do projeto.
 
-## Como usar
+## O que precisa
 
-O passo a passo completo (compilar, arquivo de paginação, cache da NVIDIA,
-rodar) está em **[docs/gtx1060.md](docs/gtx1060.md)**. Em resumo:
+| | |
+|---|---|
+| Sistema | Windows 10 ou 11, 64 bits |
+| Processador | x86-64 com AVX2 (Ryzen 1000 em diante, Intel Haswell em diante) |
+| Placa | DirectX 12 com shader model 6.6 (com o Agility SDK, uma GTX 1060 serve) e driver NVIDIA recente |
+| Memória | 32 GB de RAM **e** um arquivo de paginação de 16 a 48 GB (o jogo usa uns 35 GB) |
+| Disco | uns 10 GB para as ferramentas e a compilação, mais o cache de shaders (vários GB) |
+| O jogo | a sua própria cópia, tirada do seu Xbox Series |
+
+## Como fazer rodar no PC
+
+Tudo no PowerShell. Os caminhos abaixo usam o disco `F:`; troque se quiser outro.
+
+**1. Instalar as ferramentas (uma vez)**
 
 ```powershell
+# Git
+winget install Git.Git
+# Ferramentas de compilação da Microsoft (MSVC e Windows SDK)
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+# Rust, instalado no F: e não no C:
+[Environment]::SetEnvironmentVariable('RUSTUP_HOME', 'F:\Sistema\rust\rustup', 'User')
+[Environment]::SetEnvironmentVariable('CARGO_HOME', 'F:\Sistema\rust\cargo', 'User')
+winget install Rustlang.Rustup
+```
+
+Feche e abra o PowerShell depois de instalar. A versão certa do Rust
+(`rust-toolchain.toml`) é baixada sozinha na primeira compilação.
+
+**2. Baixar e compilar**
+
+```powershell
+cd F:\Sistema\Projetos
 git clone https://github.com/GabrieelDuart/GabeGTA6
 cd GabeGTA6
-cargo build --locked --profile diag -p victory --features diagnostics
-scripts\get-agility-sdk.ps1
-copy victory.example.toml victory.toml        # e ajuste os caminhos
-target\diag\victory.exe gpu                   # confere a placa
-scripts\play-1060.ps1 -Shaders <os arquivos de shaders>   # uma vez
-scripts\play-1060.ps1 -Exe <executável da sua cópia>
+cargo build --locked --profile diag -p victory --features diagnostics   # uns minutos
+scripts\get-agility-sdk.ps1                                            # DirectX 12 novo, para o Windows 10
+```
+
+**3. Configurar**
+
+```powershell
+copy victory.example.toml victory.toml
+notepad victory.toml        # em game_dir, a pasta da sua cópia do jogo (fora da pasta do projeto)
+```
+
+**4. Ajustar o Windows (uma vez)**
+
+- **Arquivo de paginação:** *Sistema > Configurações avançadas do sistema >
+  Desempenho > Avançado > Memória virtual*. Desmarque "Gerenciar
+  automaticamente", escolha o F:, *Tamanho personalizado*, inicial 16384 e
+  máximo 49152, e reinicie.
+- **Cache de shaders da NVIDIA:** Painel de Controle da NVIDIA > *Gerenciar
+  configurações 3D* > *Tamanho do cache de sombreador*: 10 GB.
+
+**5. Conferir a placa**
+
+```powershell
+target\diag\victory.exe gpu
+```
+
+Tem que aparecer shader model 6.6 ou mais e "directly indexed heaps: yes".
+
+**6. Traduzir os shaders (uma vez, demora minutos) e jogar**
+
+```powershell
+scripts\play-1060.ps1 -Shaders <os arquivos de shaders da sua cópia>
+scripts\play-1060.ps1 -Exe <o executável da sua cópia>
 ```
 
 Se estiver pesado: `-Scale 0.5` (resolução interna menor) e `-MipDrop 3`
-(texturas mais leves). Se algo der errado: `-Safe`.
+(texturas mais leves). Se algo der errado: `-Safe`. Caches e saves ficam em
+`F:\Sistema\Projetos\victory-data`. Feche o navegador antes de jogar.
 
+**Para atualizar depois:** `git pull` e o `cargo build` do passo 2 de novo.
+
+Mais detalhes e o porquê de cada ajuste: [docs/gtx1060.md](docs/gtx1060.md).
 Os nomes internos (`victory.exe`, as variáveis `VICTORY_...`, as crates) ficaram
-como estão: mudar quebraria a compatibilidade com o código e as correções que
-vêm dos outros projetos.
+como estão: mudar quebraria a compatibilidade com as correções que vêm dos
+outros projetos.
 
-## Estado
+## Testes no jogo
 
-Compila e passa nos testes do tradutor. **Ainda não foi testado com o jogo numa
-GTX 1060.** O que outros mediram em placas parecidas está em
-[docs/gtx1060.md](docs/gtx1060.md).
+**Ainda não foram feitos testes com o jogo.** O que já foi conferido:
+
+| Data | PC | O que foi testado | Resultado |
+|---|---|---|---|
+| 26/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | Compilação no PC | Compila |
+| 26/11/2026 | GTX 1060 6 GB, Windows 10 | `victory gpu` com o Agility SDK | Shader model 6.8, directly indexed heaps: sim |
+| 26/11/2026 | (nuvem) | Testes do tradutor de shaders | 213 passam |
+
+Esta tabela é atualizada a cada teste com o jogo: se abre, até onde vai, quantos
+quadros por segundo, o que aparece errado e com quais opções.
 
 ## Agradecimentos
 
