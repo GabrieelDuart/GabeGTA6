@@ -110,6 +110,7 @@ fn build() -> [u8; 32] {
         // served the translations an earlier run of the same
         // executable had cached with the switch unset.
         for name in [
+            "VICTORY_BVH_MISS",
             "VICTORY_WAVE_WIDE",
             "VICTORY_WAVE_DEEP_SKIPS",
             "VICTORY_WAVE_OWN_BITS",
@@ -133,6 +134,12 @@ fn build() -> [u8; 32] {
         }
         // And which clean-up passes ran over the translated code.
         bytes.extend_from_slice(&victory_shader::emit::shader_opt().to_le_bytes());
+        // Renderer port 5 (`VICTORY_PORT_CBV=1`): constant buffers read as raw
+        // bytes. Only when on, so the translations cached without it keep
+        // their key.
+        if victory_shader::emit::constants_raw() {
+            bytes.extend_from_slice(b"VICTORY_PORT_CBV=1");
+        }
         bytes
     });
     let mut hash = blake3::Hasher::new();

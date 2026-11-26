@@ -1,6 +1,9 @@
 # Starts the title with settings for a small PC: GeForce GTX 1060 6 GB, 32 GB of RAM,
 # an 8-core Ryzen 7 2700, Windows 10.
 #   scripts\play-1060.ps1 -Exe <path of your own copy's executable>
+#   scripts\play-1060.ps1 -Shaders <shader files>   translates them ahead, as the run will
+# -Scale     the title's render scale, 0.5 to 1.0 (2/3 without it): 0.5 is the lightest
+# -MipDrop   large textures start this many levels down, 0 to 3 (2): 3 is the lightest, 0 the sharpest
 # -Safe      without the newer, faster ways (the first thing to try when something is wrong)
 # -High      a 1920x1080 display instead of 1280x720 (more of the card's 6 GB)
 # -SeriesX   the Series X profile instead of Series S (needs more memory than a 6 GB card has)
@@ -10,18 +13,21 @@
 # What differs from scripts\play.ps1 (made for a 24 GB RX 7900 XTX and 64 GB of RAM):
 # - the Series S profile and a 720p display: the title renders less and keeps its own
 #   upscaler, so its targets fit a 6 GB card;
-# - less of the card is kept for render targets (768 MB, not 3 GB) and for copies of
-#   title buffers (256 MB), and textures are staged 64 MB and 8 ms a frame at most, and a frame waits 4 ms for pipelines, and textures stop at 85 % of the card's budget;
+# - less of the card is kept for render targets (768 MB, not 3 GB), copies of title
+#   buffers get 1 GB and large textures start 2 levels down, and textures are staged 64 MB and 8 ms a frame at most, and a frame waits 4 ms for pipelines, and textures stop at 85 % of the card's budget;
 # - six translating threads instead of eight (eight cores here, the title needs some);
 # - on Windows 10 the DirectX 12 Agility SDK must sit in target\<build>\D3D12 (see
 #   docs/gtx1060.md): without it no pipeline can be made and the screen stays black.
 # The GTX 1060 has no mesh shaders: its mesh programs run as compute programs whose
 # triangles a vertex shader draws (docs/gtx1060.md, VICTORY_MESH_OUT_MB for the buffer).
 param(
-    [Parameter(Mandatory)][string]$Exe,
+    [string]$Exe,
     [switch]$Safe,
     [switch]$High,
     [switch]$SeriesX,
+    [double]$Scale = 0,
+    [ValidateRange(0, 3)][int]$MipDrop = 2,
+    [string[]]$Shaders = @(),
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
     [hashtable]$More = @{}
 )
@@ -33,7 +39,21 @@ $settings = @{
     # The small card.
     VICTORY_DISPLAY_MODE = '1280x720'
     VICTORY_CARD_ROOM_FOR_TARGETS_MB = '768'
-    VICTORY_CARD_BUFFERS_MB = '256'
+    # Copies of the title's buffers in the card's memory: 1,024 MB, and 768 MB of its other
+    # memory windows. Read over the bus instead, the frame waited for the card: a GTX 1660
+    # 6 GB went from ~280 to ~100 ms a frame with these and the mip drop below
+    # (Impre-visible/victory-gtx1660); an RTX 3070 8 GB from 327 to 61 ms with 2,048
+    # (grimygunnz/nvidia-3070-VI).
+    VICTORY_CARD_BUFFERS_MB = '1024'
+    VICTORY_CARD_WINDOWS_MB = '768'
+    # Like a low texture setting: host copies of large textures (1024 and up) start
+    # -MipDrop levels down. Softer textures, far less of the card's memory.
+    VICTORY_TEXTURE_MIP_DROP = "$MipDrop"
+    # The title's output is 1280x720 (VICTORY_DISPLAY_MODE alone changes nothing: the title
+    # takes it from its settings), drawn by its own upscaler, not FidelityFX's (whose scale
+    # cannot be lowered safely). Byte-checked: another build of the title is left alone.
+    VICTORY_OUTPUT = '1280x720'
+    VICTORY_UPSCALER = '6'
     VICTORY_TEXTURE_ROOM_PERCENT = '85'
     # Textures staged a frame: at most 64 MB, in a slice of 8 ms of each frame that all
     # its passes share (the defaults, 192 MB and 250 ms a pass, can take every frame;
@@ -49,11 +69,22 @@ $settings = @{
     # that shade their hits are not compiled (from codec-d/cool_fox via cgbj-reupload).
     VICTORY_RT_RESOLVE = '0'
     VICTORY_ACTIVATE_RAYS = '0'
+    # Ray walks end at once instead of walking structures never built (~10 ms a frame on
+    # an RTX 5070; trustno1-coder/VIctory-NVIDIA). Part of the shader cache key.
+    VICTORY_BVH_MISS = '1'
+    # NVIDIA's view heap holds 1,000,000 descriptors, the title wants 1,245,184: more of
+    # them for tables made a draw at a time, or thousands of draws a frame are dropped.
+    VICTORY_DYNAMIC_SLOTS = '524288'
     # 32 GB of RAM: what the card and the title's memory are kept to is made for 32 GB
     # (the run uses ~35 GB: give Windows a page file, docs/gtx1060.md).
     VICTORY_RESIDENCY = '1'
 }
-if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080' }
+if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080'; $settings.VICTORY_OUTPUT = '1920x1080' }
+if ($Scale -gt 0) { $settings.VICTORY_RENDER_SCALE = "$Scale" }
+# The ~1,000 ray-tracing resolves and 34 traced shadows are not compiled nor drawn (their
+# structures are never built on NVIDIA: rooms went white; trustno1-coder/VIctory-NVIDIA).
+$rtList = Join-Path $PSScriptRoot 'rt_off_hashes.txt'
+if (Test-Path $rtList) { $settings.VICTORY_SKIP_PIPELINES = (Get-Content $rtList -Raw).Trim() }
 if ($Safe) {
     $settings.VICTORY_UNDER_WIDE = '0'; $settings.VICTORY_LAND_ECHO = '0'
 } else {
@@ -70,7 +101,7 @@ $console = if ($SeriesX) { 'series-x' } else { 'series-s' }
 $root = Join-Path $PSScriptRoot '..'
 $victory = Join-Path $root "target\$Build\victory.exe"
 if (-not (Test-Path $victory)) { Write-Host "No $victory. Build it first (docs/gtx1060.md)."; return }
-if (-not (Test-Path $Exe)) { Write-Host "No $Exe."; return }
+if ($Shaders.Count -eq 0 -and -not ($Exe -and (Test-Path $Exe))) { Write-Host "No -Exe '$Exe'."; return }
 $build = [Environment]::OSVersion.Version.Build
 $agility = Join-Path (Split-Path $victory) 'D3D12\D3D12Core.dll'
 if ($build -lt 22000 -and -not (Test-Path $agility)) {
@@ -87,6 +118,13 @@ $store = Join-Path (Split-Path (Resolve-Path $root).Path) 'victory-data'
 if (-not $env:VICTORY_CACHE_DIR) { $env:VICTORY_CACHE_DIR = Join-Path $store 'cache' }
 if (-not $env:VICTORY_DATA_DIR) { $env:VICTORY_DATA_DIR = Join-Path $store 'data' }
 Write-Host "Caches in $env:VICTORY_CACHE_DIR"
+if ($Shaders.Count -gt 0) {
+    # The same settings as the run: its translations are the ones looked up.
+    $Shaders = @($Shaders | ForEach-Object { (Resolve-Path $_).Path })
+    Push-Location $root
+    try { & $victory shaders @Shaders } finally { Pop-Location }
+    return
+}
 $Exe = (Resolve-Path $Exe).Path
 Push-Location $root   # victory.toml is looked for here
 try { & $victory run $Exe --execute --console $console } finally { Pop-Location }
