@@ -49,6 +49,9 @@ $settings = @{
     # that shade their hits are not compiled (from codec-d/cool_fox via cgbj-reupload).
     VICTORY_RT_RESOLVE = '0'
     VICTORY_ACTIVATE_RAYS = '0'
+    # 32 GB of RAM: what the card and the title's memory are kept to is made for 32 GB
+    # (the run uses ~35 GB: give Windows a page file, docs/gtx1060.md).
+    VICTORY_RESIDENCY = '1'
 }
 if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080' }
 if ($Safe) {
@@ -56,6 +59,10 @@ if ($Safe) {
 } else {
     $settings.VICTORY_THIN = '1'; $settings.VICTORY_THIN_THREADS = '6'; $settings.VICTORY_JOIN_PARTS = '6'
     $settings.VICTORY_UPLOAD_AHEAD = '1'
+    # Less work for the processor each frame: the constants heap is read where the title
+    # writes it (no 174 MB of uploads), and descriptor stores say what they wrote (no
+    # scan of ~600,000 slots).
+    $settings.VICTORY_PORT_CONSTANTS = '1'; $settings.VICTORY_PORT_DESCRIPTORS = '1'
 }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
 $console = if ($SeriesX) { 'series-x' } else { 'series-s' }
@@ -74,6 +81,12 @@ if ($build -lt 22000 -and -not (Test-Path $agility)) {
 $paths = 'VICTORY_CONFIG', 'VICTORY_GAME_DIR', 'VICTORY_CACHE_DIR', 'VICTORY_DATA_DIR'
 Get-ChildItem Env:VICTORY_* | Where-Object { $_.Name -notin $paths } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
 foreach ($k in $settings.Keys) { Set-Item "Env:$k" $settings[$k] }
+# The caches (translated shaders, pipelines: several GB) and saves go next to the
+# repository, not to %LOCALAPPDATA% on C:, unless you chose a place.
+$store = Join-Path (Split-Path (Resolve-Path $root).Path) 'victory-data'
+if (-not $env:VICTORY_CACHE_DIR) { $env:VICTORY_CACHE_DIR = Join-Path $store 'cache' }
+if (-not $env:VICTORY_DATA_DIR) { $env:VICTORY_DATA_DIR = Join-Path $store 'data' }
+Write-Host "Caches in $env:VICTORY_CACHE_DIR"
 $Exe = (Resolve-Path $Exe).Path
 Push-Location $root   # victory.toml is looked for here
 try { & $victory run $Exe --execute --console $console } finally { Pop-Location }

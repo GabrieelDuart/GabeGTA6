@@ -178,6 +178,8 @@ pub fn warm(paths: Vec<PathBuf>, file: &Path, jobs: Option<usize>, wave: Option<
     let limit = std::env::var("VICTORY_WARM_SECONDS").ok().and_then(|v| v.trim().parse::<u64>().ok());
     let cfg = victory_core::Config::load()?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
+    #[cfg(windows)]
+    println!("{}", victory_gpu::report::translate_as_host(wave));
     let paths = crate::default_paths(paths)?;
     let threads = jobs.unwrap_or(4).max(1);
     let began = std::time::Instant::now();
@@ -411,6 +413,9 @@ pub fn run(
 pub fn precompile(paths: Vec<PathBuf>, jobs: Option<usize>, list: Option<PathBuf>) -> Result<()> {
     let cfg = victory_core::Config::load()?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
+    // As the run on this PC will translate (its cache entries are keyed so).
+    #[cfg(windows)]
+    println!("{}", victory_gpu::report::translate_as_host(None));
     let paths = crate::default_paths(paths)?;
     let threads =
         jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));

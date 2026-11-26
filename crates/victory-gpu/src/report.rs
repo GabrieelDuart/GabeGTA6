@@ -127,3 +127,50 @@ pub fn lines() -> Vec<String> {
     }
     out
 }
+
+/// The default adapter's widest wave and whether it runs mesh shaders, for
+/// translating ahead of a run (`victory shaders`, `translate --warm`) as the
+/// run will (the translation, and its cache key, depend on both).
+pub fn caps() -> Option<(u32, bool)> {
+    let mut device: Option<ID3D12Device> = None;
+    // SAFETY: plain creation on the default adapter, then plain queries.
+    unsafe {
+        D3D12CreateDevice(None, D3D_FEATURE_LEVEL_11_0, &mut device).ok()?;
+        let device = device?;
+        let mut o1 = D3D12_FEATURE_DATA_D3D12_OPTIONS1::default();
+        device
+            .CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, (&raw mut o1).cast(), size_of_val(&o1) as u32)
+            .ok()?;
+        let mut o7 = D3D12_FEATURE_DATA_D3D12_OPTIONS7::default();
+        let mesh = device
+            .CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, (&raw mut o7).cast(), size_of_val(&o7) as u32)
+            .is_ok()
+            && o7.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+        Some((o1.WaveLaneCountMax, mesh))
+    }
+}
+
+/// Sets the translator up as a run on this PC would ([`caps`]): its wave
+/// width unless `wave` names one, and mesh programs as compute programs
+/// where there are no mesh shaders (`VICTORY_MESH_AS_COMPUTE` overrides).
+/// What it found, for a line of the command's output.
+pub fn translate_as_host(wave: Option<u32>) -> String {
+    let caps = caps();
+    if wave.is_none()
+        && let Some((lanes, _)) = caps
+    {
+        victory_shader::emit::set_host_max_wave(lanes);
+    }
+    let mesh_as_compute = std::env::var("VICTORY_MESH_AS_COMPUTE")
+        .map_or_else(|_| caps.is_some_and(|(_, mesh)| !mesh), |v| v == "1");
+    victory_shader::emit::set_mesh_as_compute(mesh_as_compute);
+    match caps {
+        Some((lanes, mesh)) => format!(
+            "translating as for this PC's GPU: waves of {}, mesh shaders {}{}",
+            wave.unwrap_or(lanes),
+            if mesh { "yes" } else { "no" },
+            if mesh_as_compute { " (mesh programs as compute programs)" } else { "" }
+        ),
+        None => "no D3D12 device: translating with the defaults".into(),
+    }
+}
