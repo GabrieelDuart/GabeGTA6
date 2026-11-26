@@ -60,7 +60,7 @@ O que é específico da GTX 1060 está em [docs/gtx1060.md](docs/gtx1060.md).
 | Componente | Status | Observação |
 |---|---|---|
 | Compilação no Windows 10 | ✅ | Compila no PC do projeto e no GitHub Actions |
-| Testes automáticos no Windows | 🟡 | 371 passam, 1 falha do código base (ver Testes no jogo) |
+| Testes automáticos no Windows | 🟡 | 388 passam (437 com diagnostics), 1 falha do código base (ver Testes no jogo) |
 | Testes do tradutor de shaders | ✅ | 215 testes passando (`cargo test -p victory-shader`) |
 | Clippy sem avisos | ✅ | Windows, com e sem diagnóstico |
 | Agility SDK no Windows 10 | ✅ | `victory gpu` na GTX 1060: shader model 6.8, directly indexed heaps |
@@ -178,7 +178,7 @@ O que já foi conferido:
 | 26/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | Compilação no PC | Compila |
 | 26/11/2026 | GTX 1060 6 GB, Windows 10 | `victory gpu` com o Agility SDK | Shader model 6.8, directly indexed heaps: sim |
 | 26/11/2026 | (nuvem) | Testes do tradutor de shaders | 215/215 tests passing |
-| 26/11/2026 | GitHub Actions (Windows, placa WARP) | `cargo test --workspace` | 371 passam, 1 falha: `depth_bounds_pipeline_loads_and_filters_draws`, do código base (depth bounds na placa de software), sem relação com as mudanças da 1060 |
+| 26/11/2026 | GitHub Actions (Windows, placa WARP) | `cargo test --workspace` | 388 passam (437 com diagnostics), 1 falha: `depth_bounds_pipeline_loads_and_filters_draws`, do código base (depth bounds na placa de software), sem relação com as mudanças da 1060. Conferido de novo depois do código do Belobug (b98474b): clippy limpo, zip gerado |
 | 26/11/2026 | GitHub Actions (Windows) | Compilação do .zip | Compila |
 
 Esta tabela é atualizada a cada teste com o jogo: se abre, até onde vai, quantos
