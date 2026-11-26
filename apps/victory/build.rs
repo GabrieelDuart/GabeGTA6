@@ -2,10 +2,11 @@
 // runtime loads `D3D12Core.dll` from the `D3D12` folder beside the executable
 // instead of the system copy. Rust's bin crates carry no export table, so the
 // linker is told explicitly; `#[unsafe(no_mangle)]` in `main.rs` keeps the
-// names unmangled.
+// names unmangled. Only for the victory binary: its tests (tests/*.rs) do not
+// define them.
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        println!("cargo:rustc-link-arg=/EXPORT:D3D12SDKVersion,DATA");
-        println!("cargo:rustc-link-arg=/EXPORT:D3D12SDKPath,DATA");
+        println!("cargo:rustc-link-arg-bin=victory=/EXPORT:D3D12SDKVersion,DATA");
+        println!("cargo:rustc-link-arg-bin=victory=/EXPORT:D3D12SDKPath,DATA");
     }
 }
