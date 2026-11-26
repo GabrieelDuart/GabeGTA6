@@ -11,7 +11,7 @@
 # - the Series S profile and a 720p display: the title renders less and keeps its own
 #   upscaler, so its targets fit a 6 GB card;
 # - less of the card is kept for render targets (768 MB, not 3 GB) and for copies of
-#   title buffers (384 MB), and textures stop at 85 % of the card's budget;
+#   title buffers (256 MB), and textures are staged 64 MB and 33 ms a frame at most, and textures stop at 85 % of the card's budget;
 # - six translating threads instead of eight (eight cores here, the title needs some);
 # - on Windows 10 the DirectX 12 Agility SDK must sit in target\<build>\D3D12 (see
 #   docs/gtx1060.md): without it no pipeline can be made and the screen stays black.
@@ -33,8 +33,12 @@ $settings = @{
     # The small card.
     VICTORY_DISPLAY_MODE = '1280x720'
     VICTORY_CARD_ROOM_FOR_TARGETS_MB = '768'
-    VICTORY_CARD_BUFFERS_MB = '384'
+    VICTORY_CARD_BUFFERS_MB = '256'
     VICTORY_TEXTURE_ROOM_PERCENT = '85'
+    # Textures staged a frame: at most 64 MB and 33 ms (the defaults, 192 MB and 250 ms,
+    # can take every frame; kelvaroq's profile for small cards uses 64 MB).
+    VICTORY_TEXTURE_STAGE_MB = '64'
+    VICTORY_TEXTURE_STAGE_MS = '33'
 }
 if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080' }
 if ($Safe) {
