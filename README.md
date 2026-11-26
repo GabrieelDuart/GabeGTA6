@@ -156,7 +156,8 @@ scripts\play-1060.ps1 -Exe <o executável da sua cópia>
 ```
 
 Se estiver pesado: `-Scale 0.5` (resolução interna menor) e `-MipDrop 3`
-(texturas mais leves). Se algo der errado: `-Safe`. Caches e saves ficam em
+(texturas mais leves). Para ver fps, VRAM e RAM na tela: `-Hud` (F3 mostra e
+esconde). Se algo der errado: `-Safe`. Caches e saves ficam em
 `F:\Sistema\Projetos\victory-data`. Feche o navegador antes de jogar.
 
 **Para atualizar depois:** `git pull` e o `cargo build` do passo 2 de novo.
@@ -206,6 +207,12 @@ O GabeGTA6 foi montado em cima do trabalho destes projetos e pessoas:
   grimygunnz e codec-d: mais cópias de buffers na placa.
 - **[victory-gtx1660](https://github.com/Impre-visible/victory-gtx1660)**, de
   Impre-visible: texturas começando num nível menor, medidas numa placa de 6 GB.
+- **[VIctory-Belobug-AMD](https://github.com/Belobug/VIctory-Belobug-AMD)**, de
+  Belobug: o painel de desempenho (`-Hud`), o limite automático de texturas
+  pela memória da placa, a proteção contra o compilador do driver travar, o
+  envio de texturas antes de cada submissão (menos tremor) e a ponte do
+  FidelityFX FSR para o PC (portada por ele do
+  [DexNom/VIctory](https://github.com/DexNom/VIctory)).
 - **[VIctory-NVIDIA](https://github.com/trustno1-coder/VIctory-NVIDIA)**, de
   trustno1-coder: o limite de descritores da NVIDIA e o fim rápido dos raios.
 

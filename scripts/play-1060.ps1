@@ -4,6 +4,7 @@
 #   scripts\play-1060.ps1 -Shaders <shader files>   translates them ahead, as the run will
 # -Scale     the title's render scale, 0.5 to 1.0 (2/3 without it): 0.5 is the lightest
 # -MipDrop   large textures start this many levels down, 0 to 3 (2): 3 is the lightest, 0 the sharpest
+# -Hud       frame rate, frame times, VRAM, RAM and CPU on the picture (F3 shows and hides it)
 # -Safe      without the newer, faster ways (the first thing to try when something is wrong)
 # -High      a 1920x1080 display instead of 1280x720 (more of the card's 6 GB)
 # -SeriesX   the Series X profile instead of Series S (needs more memory than a 6 GB card has)
@@ -28,6 +29,7 @@ param(
     [double]$Scale = 0,
     [ValidateRange(0, 3)][int]$MipDrop = 2,
     [string[]]$Shaders = @(),
+    [switch]$Hud,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
     [hashtable]$More = @{}
 )
@@ -80,6 +82,7 @@ $settings = @{
     VICTORY_RESIDENCY = '1'
 }
 if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080'; $settings.VICTORY_OUTPUT = '1920x1080' }
+if ($Hud) { $settings.VICTORY_PANEL = '1' }
 if ($Scale -gt 0) { $settings.VICTORY_RENDER_SCALE = "$Scale" }
 # The ~1,000 ray-tracing resolves and 34 traced shadows are not compiled nor drawn (their
 # structures are never built on NVIDIA: rooms went white; trustno1-coder/VIctory-NVIDIA).
