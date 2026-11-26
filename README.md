@@ -10,6 +10,13 @@ Uma camada de compatibilidade que roda o GTA VI do Xbox Series no Windows,
 | Memória | 32 GB |
 | Sistema | Windows 10 Pro |
 
+*In English:* GabeGTA6 is a Rust compatibility layer for the Xbox Series build
+of GTA VI on Windows, tuned for small NVIDIA cards (GTX 1060 6 GB, no mesh
+shaders) and 32 GB of RAM: a PE32+ loader, HLE of the console's system
+libraries (kernelx, xgameruntime, d3d12_xs) and a GFX10 (RDNA2) to DXIL shader
+recompiler on Direct3D 12, with a compute fallback for mesh shaders on
+Pascal. No game files are included; bring your own dump.
+
 **Este repositório não tem nenhum arquivo, código ou asset do jogo.** Você
 precisa da sua própria cópia, tirada do seu Xbox. O projeto não tem ligação com
 a desenvolvedora nem com a distribuidora do jogo.
@@ -32,6 +39,34 @@ Aqui ele foi adaptado para uma NVIDIA pequena:
 - **Sem ray tracing**, que não funciona numa GTX: os ~1.000 programas dele nem
   são compilados.
 - **Nada no C:.** Caches e saves ficam ao lado da pasta do projeto.
+
+## Como funciona por dentro
+
+O jogo do Xbox é um executável PE32+ que fala com bibliotecas do console. O
+GabeGTA6 faz o papel delas no Windows:
+
+| Parte | Crate | O que faz |
+|---|---|---|
+| Loader | `victory-loader`, `victory-pe` | Carrega o executável PE32+ na memória, resolve imports, relocations e TLS, e aplica os patches conferidos byte a byte (resolução, escala) |
+| Serviços do console (HLE) | `victory-hle` | kernelx, xgameruntime, xmem, d3d12_xs, DirectStorage, áudio XMA2, saves, controle |
+| Direct3D 12 | `victory-gpu` | Command lists, descriptor heaps, pipelines, cópias de memória do console para a placa, texturas com swizzle/tiling do console |
+| Tradutor de shaders | `victory-shader` | Recompila os shaders GFX10 (RDNA2) do console para DXIL, com ondas de 32 para NVIDIA e mesh shaders como compute |
+| Formatos | `victory-formats` | Texturas, layouts e BCPack do console |
+
+O que é específico da GTX 1060 está em [docs/gtx1060.md](docs/gtx1060.md).
+
+## Status por componente
+
+| Componente | Status | Observação |
+|---|---|---|
+| Compilação no Windows 10 | ✅ | Compila no PC do projeto e no GitHub Actions |
+| Testes do tradutor de shaders | ✅ | 215 testes passando (`cargo test -p victory-shader`) |
+| Clippy sem avisos | ✅ | Windows, com e sem diagnóstico |
+| Agility SDK no Windows 10 | ✅ | `victory gpu` na GTX 1060: shader model 6.8, directly indexed heaps |
+| Mesh shaders como compute (Pascal) | 🟡 | Feito, ainda não rodou com o jogo |
+| Perfil para 6 GB / 32 GB (`play-1060.ps1`) | 🟡 | Feito, ainda não medido |
+| Ray tracing | ❌ | Desligado: não funciona numa GTX |
+| Rodar com o jogo | ❌ | Ainda não testado |
 
 ## O que precisa
 
@@ -132,13 +167,15 @@ outros projetos.
 
 ## Testes no jogo
 
-**Ainda não foram feitos testes com o jogo.** O que já foi conferido:
+**Ainda não foram feitos testes com o jogo.** Os testes automáticos rodam com
+`cargo test --workspace --locked` e, a cada push, no GitHub Actions (Windows).
+O que já foi conferido:
 
 | Data | PC | O que foi testado | Resultado |
 |---|---|---|---|
 | 26/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | Compilação no PC | Compila |
 | 26/11/2026 | GTX 1060 6 GB, Windows 10 | `victory gpu` com o Agility SDK | Shader model 6.8, directly indexed heaps: sim |
-| 26/11/2026 | (nuvem) | Testes do tradutor de shaders | 213 passam |
+| 26/11/2026 | (nuvem) | Testes do tradutor de shaders | 215/215 tests passing |
 
 Esta tabela é atualizada a cada teste com o jogo: se abre, até onde vai, quantos
 quadros por segundo, o que aparece errado e com quais opções.
