@@ -196,6 +196,10 @@ enum Command {
     Replay(replay::Replay),
     /// Show the resolved configuration and check it.
     Config,
+    /// Show what the host GPU and D3D12 runtime offer (shader model, mesh
+    /// shaders, directly indexed heaps, the Agility SDK).
+    #[cfg(windows)]
+    Gpu,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -274,6 +278,13 @@ fn main() -> Result<()> {
         #[cfg(all(windows, feature = "diagnostics"))]
         Command::Replay(options) => replay::run(options),
         Command::Config => show_config(),
+        #[cfg(windows)]
+        Command::Gpu => {
+            for line in victory_gpu::report::lines() {
+                println!("{line}");
+            }
+            Ok(())
+        }
     }
 }
 

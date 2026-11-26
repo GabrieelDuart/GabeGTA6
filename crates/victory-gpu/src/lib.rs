@@ -47,7 +47,10 @@ mod book;
 mod host;
 #[cfg(windows)]
 mod indirect;
+#[cfg(windows)]
 mod mesh_args;
+#[cfg(windows)]
+pub mod report;
 #[cfg(windows)]
 mod inplace;
 #[cfg(windows)]
