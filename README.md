@@ -146,6 +146,9 @@ O GabeGTA6 foi montado em cima do trabalho destes projetos e pessoas:
 - **[cool_fox](https://github.com/DoubleGhosty/cool_fox)** (DoubleGhosty) e
   **[cgbj-reupload](https://github.com/cputroll/cgbj-reupload)** (cputroll),
   com o trabalho de codec-d: pular os programas de ray tracing.
+- **Pull requests abertos no [carlm125/cool_fox](https://github.com/carlm125/cool_fox)**:
+  Yoshi-233 (decodificação de duas instruções do console) e mattkajorinc
+  (testes de ondas de 32).
 - **[nvidia-3070-VI](https://github.com/grimygunnz/nvidia-3070-VI)**, de
   grimygunnz e codec-d: mais cópias de buffers na placa.
 - **[victory-gtx1660](https://github.com/Impre-visible/victory-gtx1660)**, de
