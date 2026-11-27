@@ -64,10 +64,10 @@ O que é específico da GTX 1060 está em [docs/gtx1060.md](docs/gtx1060.md).
 | Testes do tradutor de shaders | ✅ | 215 testes passando (`cargo test -p victory-shader`) |
 | Clippy sem avisos | ✅ | Windows, com e sem diagnóstico |
 | Agility SDK no Windows 10 | ✅ | `victory gpu` na GTX 1060: shader model 6.8, directly indexed heaps |
-| Mesh shaders como compute (Pascal) | 🟡 | Feito, ainda não rodou com o jogo |
+| Mesh shaders como compute (Pascal) | 🟡 | Roda com o jogo, mas centenas de pipelines são recusados pelo driver e a placa trava depois de alguns minutos |
 | Perfil para 6 GB / 32 GB (`play-1060.ps1`) | 🟡 | Feito, ainda não medido |
 | Ray tracing | ❌ | Desligado: não funciona numa GTX |
-| Rodar com o jogo | 🟡 | Abre e chega à tela de usuário (Player, botão A) a 30 fps na GTX 1060; ainda não passou dela (ver Testes no jogo) |
+| Rodar com o jogo | 🟡 | Abre, passa da tela de usuário e desenha o mundo a 2 a 3 fps, com partes faltando; fecha sozinho em 7 a 15 min (ver Testes no jogo) |
 
 ## O que precisa
 
@@ -169,7 +169,7 @@ outros projetos.
 
 ## Testes no jogo
 
-**Primeiro teste com o jogo em 27/11/2026:** abre e chega à tela de usuário. Os testes automáticos rodam com
+**Primeiro teste com o jogo em 27/11/2026:** abre e desenha o mundo, mas lento e fecha sozinho. Os testes automáticos rodam com
 `cargo test --workspace --locked` e, a cada push, no GitHub Actions (Windows).
 O que já foi conferido:
 
@@ -181,7 +181,8 @@ O que já foi conferido:
 | 26/11/2026 | GitHub Actions (Windows, placa WARP) | `cargo test --workspace` | 388 passam (437 com diagnostics), 1 falha: `depth_bounds_pipeline_loads_and_filters_draws`, do código base (depth bounds na placa de software), sem relação com as mudanças da 1060. Conferido de novo depois do código do Belobug (b98474b): clippy limpo, zip gerado |
 | 26/11/2026 | GitHub Actions (Windows) | Compilação do .zip | Compila |
 | 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 (19045), projeto e jogo no mesmo SSD | `play-1060.ps1 -Shaders` com a cópia inteira do jogo | 25.787 shaders no cache em 8 min; 198 não traduzem (195 contêineres sem programa de vértice/pixel/compute/malha, 3 com troca de máscara de lanes onde nem todas rodam); 16 arquivos acima de 2 GB pulados |
-| 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | `play-1060.ps1 -Exe game_scarlett_master.exe -Hud` (padrão: Series S, 1280x720, MipDrop 2) | **Abre.** Janela 1280x720, 30 fps estáveis (quadro 33,4 ms, GPU 8,8 ms, 11 desenhos por quadro), VRAM 1,3 / 5,1 GB, RAM do processo 5,8 GB (15,9 / 31,9 GB no PC), CPU 24 %, placa 26 %. Para na tela azul de usuário ("Seletor de conta (Y) / Player (A)"): o `XUserAddAsync` entregou o usuário offline "Player" e o jogo espera o botão A (Enter no teclado, com a janela em foco). Sem crash. O executável aparece como `build unknown` (não está na lista de builds conhecidos). Corrigido no `play-1060.ps1`: a variável `$build` colidia com o parâmetro `-Build` (ValidateSet) e dava erro no Windows 10 |
+| 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | `play-1060.ps1 -Exe game_scarlett_master.exe -Hud` (padrão: Series S, 1280x720, MipDrop 2) | **Abre.** Janela 1280x720, 30 fps estáveis (quadro 33,4 ms, GPU 8,8 ms, 11 desenhos por quadro), VRAM 1,3 / 5,1 GB, RAM do processo 5,8 GB (15,9 / 31,9 GB no PC), CPU 24 %, placa 26 %. Para na tela azul de usuário ("Seletor de conta (Y) / Player (A)"): o `XUserAddAsync` entregou o usuário offline "Player" e o jogo espera o botão A (Enter no teclado, com a janela em foco). Sem crash. O executável aparece como `build unknown` (não está na lista de builds conhecidos). Corrigido no `play-1060.ps1`: a variável `$build` colidia com o parâmetro `-Build` (ValidateSet) e dava erro no Windows 10. **Depois do Enter:** passa da tela de usuário e desenha o mundo (uma personagem em 3D com roupa, texturas e cenário), mas a cabeça sai preta com só olhos e dentes, a 2 a 3 fps (~420 ms por quadro, ~1.700 desenhos). 357 pipelines de malha + pixel recusados pelo driver ("Parâmetro incorreto", 0x80070057). Fecha sozinho depois de ~15 min: "a host command list did not close" (0x80004005, comando inválido gravado na lista) |
+| 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | O mesmo com `-Safe` e `VICTORY_D3D12_DEBUG=1` | 1,6 a 2 fps (~500 a 640 ms por quadro). 460 pipelines recusados. Fecha depois de ~7 min: a placa travou (TDR do driver NVIDIA, eventos nvlddmkm 13/153 e Display 4101; DXGI 0x887A0006, device hung) com uma lista de comandos de malha como compute (desenho indireto) em andamento. A camada de depuração não ligou: falta o recurso opcional "Ferramentas de Gráficos" do Windows |
 
 Esta tabela é atualizada a cada teste com o jogo: se abre, até onde vai, quantos
 quadros por segundo, o que aparece errado e com quais opções.
