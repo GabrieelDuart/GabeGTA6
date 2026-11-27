@@ -64,10 +64,10 @@ O que é específico da GTX 1060 está em [docs/gtx1060.md](docs/gtx1060.md).
 | Testes do tradutor de shaders | ✅ | 215 testes passando (`cargo test -p victory-shader`) |
 | Clippy sem avisos | ✅ | Windows, com e sem diagnóstico |
 | Agility SDK no Windows 10 | ✅ | `victory gpu` na GTX 1060: shader model 6.8, directly indexed heaps |
-| Mesh shaders como compute (Pascal) | 🟡 | Roda com o jogo, mas centenas de pipelines são recusados pelo driver e a placa trava depois de alguns minutos |
+| Mesh shaders como compute (Pascal) | 🟡 | Roda com o jogo; baricêntricas emuladas (a 1060 não tem): recusados de 342 para 69 pipelines. Lento (cada desenho de malha é dispatch, barreira e desenho) |
 | Perfil para 6 GB / 32 GB (`play-1060.ps1`) | 🟡 | Feito, ainda não medido |
 | Ray tracing | ❌ | Desligado: não funciona numa GTX |
-| Rodar com o jogo | 🟡 | Abre, passa da tela de usuário e desenha o mundo a 2 a 3 fps, com partes faltando; fecha sozinho em 7 a 15 min (ver Testes no jogo) |
+| Rodar com o jogo | 🟡 | Abre, passa da tela de usuário (`-AutoEnter`) e chega ao prólogo, a 1,5 a 4 fps; a placa é o gargalo (ver Testes no jogo) |
 
 ## O que precisa
 
@@ -175,7 +175,9 @@ outros projetos.
 
 ## Testes no jogo
 
-**Primeiro teste com o jogo em 27/11/2026:** abre e desenha o mundo, mas lento e fecha sozinho. Os testes automáticos rodam com
+**Primeiro teste com o jogo em 27/11/2026:** abre e chega ao prólogo, mas a 1,5 a 4 fps. Para medir uma rodada:
+`scripts\perf-report.ps1 <log> -LastSeconds 60` (fps, tempo na placa e no processador, VRAM, o que tentar;
+`-Follow` acompanha ao vivo). Os testes automáticos rodam com
 `cargo test --workspace --locked` e, a cada push, no GitHub Actions (Windows).
 O que já foi conferido:
 
@@ -189,6 +191,9 @@ O que já foi conferido:
 | 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 (19045), projeto e jogo no mesmo SSD | `play-1060.ps1 -Shaders` com a cópia inteira do jogo | 25.787 shaders no cache em 8 min; 198 não traduzem (195 contêineres sem programa de vértice/pixel/compute/malha, 3 com troca de máscara de lanes onde nem todas rodam); 16 arquivos acima de 2 GB pulados |
 | 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | `play-1060.ps1 -Exe game_scarlett_master.exe -Hud` (padrão: Series S, 1280x720, MipDrop 2) | **Abre.** Janela 1280x720, 30 fps estáveis (quadro 33,4 ms, GPU 8,8 ms, 11 desenhos por quadro), VRAM 1,3 / 5,1 GB, RAM do processo 5,8 GB (15,9 / 31,9 GB no PC), CPU 24 %, placa 26 %. Para na tela azul de usuário ("Seletor de conta (Y) / Player (A)"): o `XUserAddAsync` entregou o usuário offline "Player" e o jogo espera o botão A (Enter no teclado, com a janela em foco). Sem crash. O executável aparece como `build unknown` (não está na lista de builds conhecidos). Corrigido no `play-1060.ps1`: a variável `$build` colidia com o parâmetro `-Build` (ValidateSet) e dava erro no Windows 10. **Depois do Enter:** passa da tela de usuário e desenha o mundo (uma personagem em 3D com roupa, texturas e cenário), mas a cabeça sai preta com só olhos e dentes, a 2 a 3 fps (~420 ms por quadro, ~1.700 desenhos). 357 pipelines de malha + pixel recusados pelo driver ("Parâmetro incorreto", 0x80070057). Fecha sozinho depois de ~15 min: "a host command list did not close" (0x80004005, comando inválido gravado na lista) |
 | 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | O mesmo com `-Safe` e `VICTORY_D3D12_DEBUG=1` | 1,6 a 2 fps (~500 a 640 ms por quadro). 460 pipelines recusados. Fecha depois de ~7 min, bem na hora em que o gameplay ia começar: a placa travou (TDR do driver NVIDIA, eventos nvlddmkm 13/153 e Display 4101; DXGI 0x887A0006, device hung) com uma lista de comandos de malha como compute (desenho indireto) em andamento. A camada de depuração não ligou: falta o recurso opcional "Ferramentas de Gráficos" do Windows |
+| 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10, com "Ferramentas de Gráficos" | Padrão com `-AutoEnter` e `VICTORY_D3D12_DEBUG=1` | Não travou desta vez (fechado por nós). ~1,5 fps (~690 ms por quadro), até ~4.000 desenhos por quadro; cena da prisão com a cabeça e o pescoço pretos, braços sem textura, uma faixa verde enorme na tela. A depuração mostrou a causa dos pipelines recusados: **509 shaders de pixel usam baricêntricas** (`SV_Barycentrics`/`attributeAtVertex`), que a GTX 1060 não tem; 342 pipelines de malha + pixel caíam por isso. Também: 6 compute shaders pedem ondas de 64 (a placa só tem 32) e um estado de recurso errado (`COPY_DEST` lido como SRV) |
+| 27/11/2026 | Igual | Depois de emular as baricêntricas (abaixo) e do merge do PR #1 (Belobug), padrão com `-AutoEnter` | **Texturas e peles melhoraram** (relato visual). Pipelines recusados: de 342 a 69. Ainda lento: 2,2 fps (446 ms por quadro), **313 ms deles na placa**, 61 ms preparando no processador, 33 ms copiando de volta; ~3.200 desenhos; VRAM 4,6 de 4,8 GB e **6,3 GB da memória do PC usados pela placa** (lidos pelo barramento). O PC fica pesado (RAM 28 de 32 GB) |
+| 27/11/2026 | Igual | `-Scale 0.5 -MipDrop 3 -AutoEnter` | Chega ao "Prologue". 1,5 a 4 fps (228 a 650 ms por quadro, conforme a cena; até ~4.600 desenhos), placa a 100 %, VRAM 4,4 de 4,7 GB e 6,9 GB na memória do PC. Escala e texturas menores quase não mudam: o gargalo não é resolução |
 
 Esta tabela é atualizada a cada teste com o jogo: se abre, até onde vai, quantos
 quadros por segundo, o que aparece errado e com quais opções.
