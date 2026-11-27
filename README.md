@@ -157,7 +157,8 @@ scripts\play-1060.ps1 -Exe <o executável da sua cópia>
 
 Se estiver pesado: `-Scale 0.5` (resolução interna menor) e `-MipDrop 3`
 (texturas mais leves). Para ver fps, VRAM e RAM na tela: `-Hud` (F3 mostra e
-esconde). Se algo der errado: `-Safe`. Caches e saves ficam em
+esconde). Para não precisar apertar Enter na tela de usuário ("Player (A)"):
+`-AutoEnter`. Se algo der errado: `-Safe`. Caches e saves ficam em
 `F:\Sistema\Projetos\victory-data`. Feche o navegador antes de jogar.
 
 **Para atualizar depois:** `git pull` e o `cargo build` do passo 2 de novo.

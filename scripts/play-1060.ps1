@@ -9,7 +9,9 @@
 # -High      a 1920x1080 display instead of 1280x720 (more of the card's 6 GB)
 # -SeriesX   the Series X profile instead of Series S (needs more memory than a 6 GB card has)
 # -Build     target\diag (default) or target\release
-# -More      other settings: -More @{VICTORY_PANEL='1'}
+# -AutoEnter presses Enter (the A button) for you at 6, 8, 10, 12 and 15 s, past the
+#            user screen ("Player (A)"); diag build only (VICTORY_KEYS), works without focus
+# -More     other settings: -More @{VICTORY_PANEL='1'}
 #
 # What differs from scripts\play.ps1 (made for a 24 GB RX 7900 XTX and 64 GB of RAM):
 # - the Series S profile and a 720p display: the title renders less and keeps its own
@@ -30,6 +32,7 @@ param(
     [ValidateRange(0, 3)][int]$MipDrop = 2,
     [string[]]$Shaders = @(),
     [switch]$Hud,
+    [switch]$AutoEnter,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
     [hashtable]$More = @{}
 )
@@ -83,6 +86,7 @@ $settings = @{
 }
 if ($High) { $settings.VICTORY_DISPLAY_MODE = '1920x1080'; $settings.VICTORY_OUTPUT = '1920x1080' }
 if ($Hud) { $settings.VICTORY_PANEL = '1' }
+if ($AutoEnter) { $settings.VICTORY_KEYS = '6:Enter,8:Enter,10:Enter,12:Enter,15:Enter' }
 if ($Scale -gt 0) { $settings.VICTORY_RENDER_SCALE = "$Scale" }
 # The ~1,000 ray-tracing resolves and 34 traced shadows are not compiled nor drawn (their
 # structures are never built on NVIDIA: rooms went white; trustno1-coder/VIctory-NVIDIA).
