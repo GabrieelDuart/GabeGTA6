@@ -164,12 +164,21 @@ pub fn translate_as_host(wave: Option<u32>) -> String {
     let mesh_as_compute = std::env::var("VICTORY_MESH_AS_COMPUTE")
         .map_or_else(|_| caps.is_some_and(|(_, mesh)| !mesh), |v| v == "1");
     victory_shader::emit::set_mesh_as_compute(mesh_as_compute);
+    // As the run decides it (`host::emulate_barycentrics`).
+    let mut device: Option<ID3D12Device> = None;
+    // SAFETY: plain creation on the default adapter.
+    let emulate = unsafe { D3D12CreateDevice(None, D3D_FEATURE_LEVEL_11_0, &mut device) }
+        .ok()
+        .and(device)
+        .is_some_and(|d| crate::host::emulate_barycentrics(&d));
+    victory_shader::emit::set_emulate_barycentrics(emulate);
     match caps {
         Some((lanes, mesh)) => format!(
-            "translating as for this PC's GPU: waves of {}, mesh shaders {}{}",
+            "translating as for this PC's GPU: waves of {}, mesh shaders {}{}{}",
             wave.unwrap_or(lanes),
             if mesh { "yes" } else { "no" },
-            if mesh_as_compute { " (mesh programs as compute programs)" } else { "" }
+            if mesh_as_compute { " (mesh programs as compute programs)" } else { "" },
+            if emulate { ", barycentrics emulated" } else { "" }
         ),
         None => "no D3D12 device: translating with the defaults".into(),
     }

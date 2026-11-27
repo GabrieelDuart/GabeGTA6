@@ -119,7 +119,10 @@ use crate::{ShaderError, io, ir, resource, structure};
 
 pub use bitcode::census;
 pub use sampler::StaticSampler;
-pub use lower::{host_settings, set_host_max_wave, set_host_rdna, set_mesh_as_compute, set_thread_max_wave};
+pub use lower::{
+    host_settings, set_emulate_barycentrics, set_host_max_wave, set_host_rdna, set_mesh_as_compute,
+    set_thread_max_wave,
+};
 pub use mesh_vs::mesh_vs;
 pub use rect::rect_list_gs;
 pub use shader::{
@@ -3217,6 +3220,54 @@ mod barycentric_tests {
         assert_ne!(features & 0x2_0000, 0, "no Barycentrics feature");
         assert_eq!(inputs.iter().filter(|e| e.kind == 28).count(), 1);
         assert_eq!(texcoord_mode(&shader), 1);
+        validate(&shader);
+    }
+
+    /// On a host without barycentrics (`set_emulate_barycentrics`), the
+    /// values I and J are channels y and z of an ordinary input of ours,
+    /// perspective-interpolated, and the shader needs no Barycentrics feature.
+    #[test]
+    fn emulated_barycentrics_are_an_input_of_ours() {
+        lower::TEST_EMULATE_BARYCENTRICS.set(Some(true));
+        let [e0, e1] = exp_mrt0(2);
+        let words = [v_add_f32(2, 0, 1), e0, e1, 0xBF81_0000];
+        let shader = pixel(&words, PERSP_CENTER);
+        lower::TEST_EMULATE_BARYCENTRICS.set(None);
+        let shader = shader.unwrap();
+        let (features, inputs) = parts(&shader);
+        assert_eq!(features & 0x2_0000, 0, "a Barycentrics feature");
+        assert!(inputs.iter().all(|e| e.kind != 28), "{inputs:?}");
+        let ours: Vec<_> = inputs.iter().filter(|e| e.name == lower::EMULATED_BARYCENTRICS).collect();
+        assert_eq!(ours.len(), 1, "{inputs:?}");
+        assert_eq!((ours[0].kind, ours[0].col, ours[0].cols), (0, 0, 3));
+        assert!(ours[0].row.is_some());
+        validate(&shader);
+    }
+
+    /// Computed barycentrics without `attributeAtVertex`: TEXCOORD0 stays
+    /// constant (corner 0), corners 1 and 2 are constant inputs of ours.
+    #[test]
+    fn emulated_computed_barycentrics_read_corner_inputs() {
+        lower::TEST_EMULATE_BARYCENTRICS.set(Some(true));
+        let [e0, e1] = exp_mrt0(2);
+        let words = [
+            0x1006_00F0, // v_mul_f32 v3, 0.5, v0
+            0xC808_0003, // v_interp_p1_f32 v2, v3, attr0.x
+            0xC809_0001, // v_interp_p2_f32 v2, v1, attr0.x
+            e0,
+            e1,
+            S_ENDPGM,
+        ];
+        let shader = pixel(&words, PERSP_CENTER);
+        lower::TEST_EMULATE_BARYCENTRICS.set(None);
+        let shader = shader.unwrap();
+        let (features, inputs) = parts(&shader);
+        assert_eq!(features & 0x2_0000, 0, "a Barycentrics feature");
+        assert_eq!(texcoord_mode(&shader), 1);
+        for k in 1..=2 {
+            let name = format!("{}{k}_TEXCOORD", lower::EMULATED_CORNER);
+            assert!(inputs.iter().any(|e| e.name == name), "no {name}: {inputs:?}");
+        }
         validate(&shader);
     }
 
