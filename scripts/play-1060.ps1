@@ -105,9 +105,11 @@ $root = Join-Path $PSScriptRoot '..'
 $victory = Join-Path $root "target\$Build\victory.exe"
 if (-not (Test-Path $victory)) { Write-Host "No $victory. Build it first (docs/gtx1060.md)."; return }
 if ($Shaders.Count -eq 0 -and -not ($Exe -and (Test-Path $Exe))) { Write-Host "No -Exe '$Exe'."; return }
-$build = [Environment]::OSVersion.Version.Build
+# Not $build: PowerShell names ignore case, so it would be the -Build parameter (diag/release)
+# and the assignment fails its ValidateSet, which also skipped this Agility SDK check.
+$osBuild = [Environment]::OSVersion.Version.Build
 $agility = Join-Path (Split-Path $victory) 'D3D12\D3D12Core.dll'
-if ($build -lt 22000 -and -not (Test-Path $agility)) {
+if ($osBuild -lt 22000 -and -not (Test-Path $agility)) {
     Write-Host "Windows 10 without $agility : the screen will stay black. See docs/gtx1060.md."
     return
 }

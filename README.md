@@ -67,7 +67,7 @@ O que é específico da GTX 1060 está em [docs/gtx1060.md](docs/gtx1060.md).
 | Mesh shaders como compute (Pascal) | 🟡 | Feito, ainda não rodou com o jogo |
 | Perfil para 6 GB / 32 GB (`play-1060.ps1`) | 🟡 | Feito, ainda não medido |
 | Ray tracing | ❌ | Desligado: não funciona numa GTX |
-| Rodar com o jogo | ❌ | Ainda não testado |
+| Rodar com o jogo | 🟡 | Abre e chega à tela de usuário (Player, botão A) a 30 fps na GTX 1060; ainda não passou dela (ver Testes no jogo) |
 
 ## O que precisa
 
@@ -169,7 +169,7 @@ outros projetos.
 
 ## Testes no jogo
 
-**Ainda não foram feitos testes com o jogo.** Os testes automáticos rodam com
+**Primeiro teste com o jogo em 27/11/2026:** abre e chega à tela de usuário. Os testes automáticos rodam com
 `cargo test --workspace --locked` e, a cada push, no GitHub Actions (Windows).
 O que já foi conferido:
 
@@ -180,6 +180,8 @@ O que já foi conferido:
 | 26/11/2026 | (nuvem) | Testes do tradutor de shaders | 215/215 tests passing |
 | 26/11/2026 | GitHub Actions (Windows, placa WARP) | `cargo test --workspace` | 388 passam (437 com diagnostics), 1 falha: `depth_bounds_pipeline_loads_and_filters_draws`, do código base (depth bounds na placa de software), sem relação com as mudanças da 1060. Conferido de novo depois do código do Belobug (b98474b): clippy limpo, zip gerado |
 | 26/11/2026 | GitHub Actions (Windows) | Compilação do .zip | Compila |
+| 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 (19045), projeto e jogo no mesmo SSD | `play-1060.ps1 -Shaders` com a cópia inteira do jogo | 25.787 shaders no cache em 8 min; 198 não traduzem (195 contêineres sem programa de vértice/pixel/compute/malha, 3 com troca de máscara de lanes onde nem todas rodam); 16 arquivos acima de 2 GB pulados |
+| 27/11/2026 | GTX 1060 6 GB, Ryzen 7 2700, 32 GB, Windows 10 | `play-1060.ps1 -Exe game_scarlett_master.exe -Hud` (padrão: Series S, 1280x720, MipDrop 2) | **Abre.** Janela 1280x720, 30 fps estáveis (quadro 33,4 ms, GPU 8,8 ms, 11 desenhos por quadro), VRAM 1,3 / 5,1 GB, RAM do processo 5,8 GB (15,9 / 31,9 GB no PC), CPU 24 %, placa 26 %. Para na tela azul de usuário ("Seletor de conta (Y) / Player (A)"): o `XUserAddAsync` entregou o usuário offline "Player" e o jogo espera o botão A (Enter no teclado, com a janela em foco). Sem crash. O executável aparece como `build unknown` (não está na lista de builds conhecidos). Corrigido no `play-1060.ps1`: a variável `$build` colidia com o parâmetro `-Build` (ValidateSet) e dava erro no Windows 10 |
 
 Esta tabela é atualizada a cada teste com o jogo: se abre, até onde vai, quantos
 quadros por segundo, o que aparece errado e com quais opções.
