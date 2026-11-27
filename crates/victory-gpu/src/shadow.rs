@@ -16,7 +16,7 @@
 //! indexed heaps keep what their first use copied.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
@@ -5683,8 +5683,28 @@ fn loose(address: u64, end: u64, unsized_ask: bool, any: bool) -> Option<Arc<Sha
 #[allow(clippy::type_complexity)]
 static EXACT: Mutex<(u64, BTreeMap<(u64, u64), (Arc<Shadow>, u64)>)> = Mutex::new((0, BTreeMap::new()));
 
-/// Since the last frame line: askings for such copies, and copies made.
-static EXACT_STATS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+/// Since the last frame line: askings for such copies, copies made, and
+/// of those, made on a buffer let go ([`EXACT_FREE`]).
+static EXACT_STATS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+/// Buffers of copies [`exact`] let go, by size, still mapped: the title's
+/// ring positions change every frame, so its views get new copies of the
+/// same few sizes all the time.
+static EXACT_FREE: Mutex<BTreeMap<u64, Vec<FreeBuffer>>> = Mutex::new(BTreeMap::new());
+
+/// A buffer of [`EXACT_FREE`] and where it is mapped.
+struct FreeBuffer(ID3D12Resource, usize);
+// SAFETY: D3D12 objects may be used from any thread; the mapping is the
+// buffer's, held by nothing else while it is free.
+unsafe impl Send for FreeBuffer {}
+/// Buffers kept free of one size, at most.
+const EXACT_FREE_MOST: usize = 512;
+
+/// The buffer size a copy of `len` bytes gets: a power of two (256 at
+/// least), so that buffers let go fit other copies.
+fn exact_size(len: u64) -> u64 {
+    len.max(256).next_power_of_two()
+}
 
 /// A copy of the title memory `[address, address + len)` that starts at
 /// `address` itself: for a buffer view whose bytes do not start on an
@@ -5722,14 +5742,41 @@ pub(crate) fn exact(address: u64, len: u64) -> Option<Arc<Shadow>> {
         shadow.used.store(crate::host::moment(), Ordering::Relaxed);
         return Some(shadow.clone());
     }
-    if map.len() >= MANY {
+    // The idle ones are looked for when the map has doubled since the last
+    // look, not at every new copy past MANY: the title asks for ~350 new
+    // views a frame with ~4,000 kept, and a look at each (two COM calls a
+    // copy) was the list threads' busiest work on a GTX 1060 PC.
+    static LOOK_AT: AtomicUsize = AtomicUsize::new(MANY);
+    if map.len() >= LOOK_AT.load(Ordering::Relaxed) {
         // Held by the map alone (no list), its buffer by the copy alone (no
-        // slot shows it), and not asked for lately.
+        // slot shows it), and not asked for lately: its buffer is free for
+        // the next copy of that size.
+        let mut free = EXACT_FREE.lock().unwrap_or_else(|e| e.into_inner());
         map.retain(|_, (shadow, used)| {
-            Arc::strong_count(shadow) > 1 || crate::host::references(&shadow.buffer) > 1 || *used + LATELY > now
+            let keep =
+                Arc::strong_count(shadow) > 1 || crate::host::references(&shadow.buffer) > 1 || *used + LATELY > now;
+            if !keep {
+                let size = exact_size(shadow.len);
+                let bucket = free.entry(size).or_default();
+                if bucket.len() < EXACT_FREE_MOST {
+                    bucket.push(FreeBuffer(shadow.buffer.clone(), shadow.data as usize));
+                }
+            }
+            keep
         });
+        LOOK_AT.store((map.len() * 2).max(MANY), Ordering::Relaxed);
     }
-    let (buffer, data) = host()?.shared_buffer(len.next_multiple_of(256))?;
+    // A buffer of a copy let go, else a new one (made resident and mapped:
+    // kernel calls each).
+    let size = exact_size(len);
+    let reused = EXACT_FREE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&size).and_then(Vec::pop);
+    let (buffer, data) = match reused {
+        Some(FreeBuffer(buffer, data)) => {
+            EXACT_STATS[2].fetch_add(1, Ordering::Relaxed);
+            (buffer, data as *mut u8)
+        }
+        None => host()?.shared_buffer(size)?,
+    };
     crate::host::name(&buffer, || format!("title view {address:#x}+{len:#x}"));
     // SAFETY: a live buffer.
     let gpu = unsafe { buffer.GetGPUVirtualAddress() };
@@ -5747,16 +5794,17 @@ pub(crate) static OWN_MADE: AtomicU64 = AtomicU64::new(0);
 /// bytes ([`exact`]), per frame over `frames`, and the copies kept now.
 /// Nothing while there are none.
 pub(crate) fn exact_line(frames: f64) {
-    let [asked, made] = [0, 1].map(|i| EXACT_STATS[i].swap(0, Ordering::Relaxed));
+    let [asked, made, reused] = [0, 1, 2].map(|i| EXACT_STATS[i].swap(0, Ordering::Relaxed));
     if asked == 0 {
         return;
     }
     let kept = EXACT.lock().unwrap_or_else(|e| e.into_inner()).1.len();
     tracing::info!(
         "buffer views off their copy's elements (they were refused and read zeros; VICTORY_VIEW_BYTES=0 refuses them again): \
-         {:.1} asked for per frame, {:.1} copies of their own bytes made per frame, {kept} kept",
+         {:.1} asked for per frame, {:.1} copies of their own bytes made per frame ({:.1} on a buffer let go), {kept} kept",
         asked as f64 / frames,
-        made as f64 / frames
+        made as f64 / frames,
+        reused as f64 / frames
     );
 }
 

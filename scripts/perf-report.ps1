@@ -19,7 +19,8 @@ function Read-Records([string]$path) {
             if ($current) { $records.Add($current) }
             $current = $line
         } elseif ($current) {
-            $current += ' ' + $line.Trim()
+            # A wrap leaves its space at the end of the line before (or cuts a word).
+            $current += $line.TrimStart()
         }
     }
     if ($current) { $records.Add($current) }
@@ -73,8 +74,9 @@ function Show-Report {
     $nop = Get-Median ($frames | ForEach-Object NoPipeline)
     Write-Host ("frames      {0} fps median ({1:N0} ms a frame), best {2} fps, worst {3} fps, {4} samples" -f
         $fps, $ms, ($frames | Measure-Object Fps -Maximum).Maximum, ($frames | Measure-Object Fps -Minimum).Minimum, $frames.Count)
-    Write-Host ("a frame     {0:N0} ms on the card, {1:N0} ms preparing on the processor, {2:N0} ms copying back" -f $gpu, $prep, $back)
-    if ($busy) { Write-Host ("card busy   about {0}% by our count" -f (Get-Median $busy)) }
+    $cardBusy = Get-Median $busy
+    Write-Host ("a frame     {0:N0} ms preparing on the processor, {1:N0} ms copying back, {2:N0} ms waiting on the card" -f $prep, $back, $gpu)
+    if ($busy) { Write-Host ("card busy   about {0}% of the time (~{1:N0} ms a frame)" -f $cardBusy, ($cardBusy * $ms / 100)) }
     Write-Host ("draws       {0} a frame, {1} dropped without a pipeline" -f $dr, $nop)
     if ($vram) {
         Write-Host ("video mem   {0} of {1} MB on the card; {2} MB of the PC's memory used by the card" -f $vram.Used, $vram.Budget, $vram.Shared)
@@ -88,8 +90,8 @@ function Show-Report {
         Write-Host '* The card''s memory is full, so textures and buffers live in the PC''s memory and are read over the bus: -MipDrop 3, -Scale 0.5, close the browser.'
         $any = $true
     }
-    if ($gpu -ge 0.6 * $ms) {
-        Write-Host ('* The card is the bottleneck ({0:N0} of {1:N0} ms): -Scale 0.5; mesh draws (each a dispatch, barriers and a draw on this card) are the next suspect.' -f $gpu, $ms)
+    if ($cardBusy -ge 70 -or $gpu -ge 0.6 * $ms) {
+        Write-Host ('* The card is the bottleneck (busy {0}% of a {1:N0} ms frame): record a timeline (VICTORY_TIMELINE) to see which work.' -f $cardBusy, $ms)
         $any = $true
     } elseif ($prep -ge 0.4 * $ms) {
         Write-Host ('* The processor is the bottleneck ({0:N0} ms preparing): keep -Safe off; VICTORY_THIN_THREADS.' -f $prep)
