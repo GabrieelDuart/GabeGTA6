@@ -158,7 +158,12 @@ scripts\play-1060.ps1 -Exe <o executável da sua cópia>
 Se estiver pesado: `-Scale 0.5` (resolução interna menor) e `-MipDrop 3`
 (texturas mais leves). Para ver fps, VRAM e RAM na tela: `-Hud` (F3 mostra e
 esconde). Para não precisar apertar Enter na tela de usuário ("Player (A)"):
-`-AutoEnter`. Se algo der errado: `-Safe`. Caches e saves ficam em
+`-AutoEnter`. Para jogar no teclado e mouse como no GTA V do PC: `-Kbm` (F2 prende o mouse
+na câmera; Esc, P ou sair da janela solta). Botões: esquerdo = RT, direito = LT,
+meio ou C = R3, Shift = A, Espaço = X, R = B, F = Y, Tab = LB, Q = RB,
+Ctrl = L3, E = direcional direita, V = View, Enter continua A nos menus; sensibilidade com
+`-More @{VICTORY_MOUSE_SENS='1.5'}` e eixo invertido com
+`-More @{VICTORY_MOUSE_INVERT_Y='1'}`. Se algo der errado: `-Safe`. Caches e saves ficam em
 `F:\Sistema\Projetos\victory-data`. Feche o navegador antes de jogar.
 
 **Para atualizar depois:** `git pull` e o `cargo build` do passo 2 de novo.
@@ -216,7 +221,15 @@ O GabeGTA6 foi montado em cima do trabalho destes projetos e pessoas:
   pela memória da placa, a proteção contra o compilador do driver travar, o
   envio de texturas antes de cada submissão (menos tremor) e a ponte do
   FidelityFX FSR para o PC (portada por ele do
-  [DexNom/VIctory](https://github.com/DexNom/VIctory)).
+  [DexNom/VIctory](https://github.com/DexNom/VIctory)). Em 27/11 vieram mais
+  28 commits do `a-publier` com autores da comunidade: teclado e mouse estilo
+  GTA V (zhu1025960209-web), descritores do port 2 sem trabalho dobrado
+  (SalmanBarkat), VRAM do painel separada em uso / orçamento / total (IronMan),
+  aviso claro quando o Windows recusa os heaps indexados (adrianmjim), o
+  `warm-bad.txt` por placa e driver (BlueDragonReal), o perfil sem crash
+  (Oğuz Akın, Lux-Designs), o teste de depth bounds na WARP (loyodea), o
+  `--warm` usando todos os núcleos (TinkerBell-90), a consulta de tamanho que
+  derrubava o compilador (alexdeliu) e outros.
 - **[VIctory-NVIDIA](https://github.com/trustno1-coder/VIctory-NVIDIA)**, de
   trustno1-coder: o limite de descritores da NVIDIA e o fim rápido dos raios.
 
