@@ -1526,9 +1526,45 @@ pub fn host_settings() -> [u32; 5] {
         super::shader::view_heap_limit(),
         super::shader::raw_views(),
         host_rdna(),
-        u32::from(mesh_as_compute()),
+        u32::from(mesh_as_compute()) | u32::from(emulate_barycentrics()) << 1,
     ]
 }
+
+static EMULATE_BARYCENTRICS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tells the translator that the host has no `SV_Barycentrics` nor
+/// `attributeAtVertex` (a GeForce GTX 10 series): a pixel program reads
+/// them from inputs of ours instead, which the vertex shader that draws a
+/// mesh program run as a compute program ([`super::mesh_vs`]) writes. A
+/// vertex shader of the title's writes none, so such a pipeline is still
+/// refused, as it was without.
+pub fn set_emulate_barycentrics(on: bool) {
+    EMULATE_BARYCENTRICS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's choice for [`emulate_barycentrics`], for its thread only.
+    pub(super) static TEST_EMULATE_BARYCENTRICS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether barycentrics are read from inputs of ours ([`set_emulate_barycentrics`]).
+pub(super) fn emulate_barycentrics() -> bool {
+    #[cfg(test)]
+    if let Some(on) = TEST_EMULATE_BARYCENTRICS.get() {
+        return on;
+    }
+    EMULATE_BARYCENTRICS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The input of ours that stands for `SV_Barycentrics` (its x, y, z the
+/// weights of the triangle's corners 0, 1, 2) where they are emulated.
+pub const EMULATED_BARYCENTRICS: &str = "VICTORYBARY";
+/// Prefix of an input of ours that holds another input's value at a
+/// triangle's corner 1 or 2 (`VICTORYV1_` then that input's name, the same
+/// index), where `attributeAtVertex` is emulated; corner 0 is the input
+/// itself, constant (the provoking vertex).
+pub const EMULATED_CORNER: &str = "VICTORYV";
 
 static MESH_AS_COMPUTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -3255,6 +3291,34 @@ impl<'a> Lower<'a> {
         if index > 1 {
             return Val::Missing("pull-model barycentrics");
         }
+        if emulate_barycentrics() {
+            // An ordinary input of ours, interpolated in the same mode:
+            // the vertex shader writes each corner's weight 1, the others 0.
+            let ours = |e: &SigElement| e.kind == 0 && e.name == EMULATED_BARYCENTRICS;
+            let id = match self.s.inputs.iter().position(|e| ours(e) && e.interp == mode) {
+                Some(id) => id,
+                None => {
+                    let index = self.s.inputs.iter().filter(|e| ours(e)).count() as u32;
+                    let Some(row) = self.emulated_row() else {
+                        return Val::Missing("no input row left for emulated barycentrics");
+                    };
+                    self.s.inputs.push(SigElement {
+                        name: EMULATED_BARYCENTRICS.into(),
+                        index,
+                        kind: 0,
+                        comp: 9,
+                        interp: mode,
+                        row: Some(row),
+                        col: 0,
+                        cols: 3,
+                        usage: 0,
+                        half: false,
+                    });
+                    self.s.inputs.len() - 1
+                }
+            };
+            return self.load_any_input(id, index + 1);
+        }
         // One element per interpolation mode (the console's own, if its
         // signature declares one): DXIL allows two.
         let bary = |e: &SigElement| e.kind == 28;
@@ -3295,6 +3359,13 @@ impl<'a> Lower<'a> {
         e.interp = mode;
         self.s.flags |= flags::BARYCENTRICS;
         self.load_any_input(id, index + 1)
+    }
+
+    /// A row after every input's, for an input of ours (as system inputs
+    /// the console signature lacks get), if a pixel program has one left.
+    fn emulated_row(&self) -> Option<u32> {
+        let free = self.s.inputs.iter().filter_map(|e| e.row).map(|r| r + 1).max().unwrap_or(0);
+        (free < 32).then_some(free)
     }
 
     fn i32_of(&mut self, v: Value) -> Result<V, Why> {
@@ -11490,6 +11561,41 @@ impl<'a> Lower<'a> {
     /// Vertex `k` (0 the provoking vertex, as `barycentric` orders them)
     /// of a constant input element's channel, as a float.
     fn vertex_input(&mut self, id: usize, col: u8, k: u8) -> V {
+        if emulate_barycentrics() {
+            // Corner 0 is the element itself (constant: the provoking
+            // vertex's); corners 1 and 2 are constant copies of ours that
+            // the vertex shader fills with those corners' values.
+            let at = if k == 0 {
+                Some(id)
+            } else {
+                let e = &self.s.inputs[id];
+                let name = format!("{EMULATED_CORNER}{k}_{}", e.name);
+                let index = e.index;
+                match self.s.inputs.iter().position(|o| o.kind == 0 && o.name == name && o.index == index) {
+                    Some(at) => Some(at),
+                    None => self.emulated_row().map(|row| {
+                        let copy = SigElement {
+                            name,
+                            interp: 1,
+                            row: Some(row),
+                            usage: 0,
+                            ..self.s.inputs[id].clone()
+                        };
+                        self.s.inputs.push(copy);
+                        self.s.inputs.len() - 1
+                    }),
+                }
+            };
+            if let Some(at) = at {
+                return match self.load_any_input(at, col) {
+                    Val::I32(x) => self.s.m.cast(self.s.entry, Cast::Bitcast, x, self.s.t.f32),
+                    // (load_any_input gives integers alone.)
+                    _ => self.s.m.f32(0),
+                };
+            }
+            // No row left: read zero (a pipeline that is drawn, if wrong).
+            return self.s.m.f32(0);
+        }
         let e = &mut self.s.inputs[id];
         e.usage |= 1 << col;
         let int = e.comp != 9;

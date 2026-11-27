@@ -1061,6 +1061,11 @@ fn create() -> windows::core::Result<Host> {
         if as_compute {
             tracing::info!("mesh shaders run as compute programs whose triangles a vertex shader draws");
         }
+        let emulate = emulate_barycentrics(&device);
+        victory_shader::emit::set_emulate_barycentrics(emulate);
+        if emulate {
+            tracing::info!("no barycentrics on the card: pixel programs read them from the mesh draws' vertex shader");
+        }
         let messages = debug
             .then(|| device.cast::<ID3D12InfoQueue>().ok())
             .flatten();
@@ -10483,6 +10488,26 @@ fn mesh_support(device: &ID3D12Device) -> bool {
 /// or with `VICTORY_MESH_AS_COMPUTE=1` anywhere (to compare the two).
 fn mesh_as_compute(device: &ID3D12Device) -> bool {
     std::env::var("VICTORY_MESH_AS_COMPUTE").map_or_else(|_| !mesh_support(device), |v| v == "1")
+}
+
+/// Whether `device` has `SV_Barycentrics` and `attributeAtVertex` (a
+/// GeForce GTX 10 has neither).
+pub(crate) fn barycentrics_support(device: &ID3D12Device) -> bool {
+    let mut o3 = D3D12_FEATURE_DATA_D3D12_OPTIONS3::default();
+    // SAFETY: the query writes its own structure of the given size.
+    let ok = unsafe {
+        device
+            .CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, (&raw mut o3).cast(), size_of_val(&o3) as u32)
+            .is_ok()
+    };
+    ok && o3.BarycentricsSupported.as_bool()
+}
+
+/// Whether pixel programs read barycentrics from inputs of ours
+/// (`victory_shader::emit::set_emulate_barycentrics`): where the host has
+/// none, or with `VICTORY_EMULATE_BARYCENTRICS=1` anywhere.
+pub(crate) fn emulate_barycentrics(device: &ID3D12Device) -> bool {
+    std::env::var("VICTORY_EMULATE_BARYCENTRICS").map_or_else(|_| !barycentrics_support(device), |v| v == "1")
 }
 
 pub(crate) fn transition(

@@ -32,6 +32,12 @@ enum Source {
     Primitive(u32),
     /// Not exported by the mesh program.
     Zero,
+    /// Emulated barycentrics (`lower::EMULATED_BARYCENTRICS`): column c is
+    /// 1 at corner c, 0 at the others.
+    Weights,
+    /// Dword of the vertex record of the triangle's corner 1 or 2
+    /// (`lower::EMULATED_CORNER`), not this vertex's.
+    Corner(u32, u32),
 }
 
 /// The vertex shader (a DXIL container) for the mesh program `ms` drawn
@@ -80,7 +86,28 @@ fn build(
     // rasterizer's own values (front face, primitive id, sample index,
     // coverage, barycentrics) are none of ours.
     for e in ps_inputs.iter().filter(|e| matches!(e.kind, 0 | 3 | 6 | 7) && e.row.is_some()) {
-        let source = if let Some(v) = vertex.iter().find(|v| same(v, e) && v.row.is_some()) {
+        // Another input at corner 1 or 2, for a pixel program that reads
+        // inputs per vertex on a host without `attributeAtVertex`.
+        let corner = (e.kind == 0)
+            .then(|| e.name.strip_prefix(super::lower::EMULATED_CORNER))
+            .flatten()
+            .and_then(|rest| {
+                let (k, name) = rest.split_once('_')?;
+                let k: u32 = k.parse().ok().filter(|k| (1..=2).contains(k))?;
+                Some((k, SigElement { name: name.into(), ..e.clone() }))
+            });
+        let source = if e.kind == 0 && e.name == super::lower::EMULATED_BARYCENTRICS {
+            Source::Weights
+        } else if let Some((k, of)) = corner {
+            match vertex.iter().find(|v| same(v, &of) && v.row.is_some()) {
+                Some(v) => Source::Corner(k, v.row.unwrap_or(0) * 4 + u32::from(e.col.max(v.col))),
+                // A per-primitive value is the same at every corner.
+                None => match prims.iter().find(|p| same(p, &of) && p.row.is_some()) {
+                    Some(p) => Source::Primitive(4 + p.row.unwrap_or(0) * 4 + u32::from(e.col.max(p.col))),
+                    None => Source::Zero,
+                },
+            }
+        } else if let Some(v) = vertex.iter().find(|v| same(v, e) && v.row.is_some()) {
             Source::Vertex(v.row.unwrap_or(0) * 4 + u32::from(e.col.max(v.col)))
         } else if let Some(p) = prims.iter().find(|p| same(p, e) && p.row.is_some()) {
             Source::Primitive(4 + p.row.unwrap_or(0) * 4 + u32::from(e.col.max(p.col)))
@@ -148,12 +175,41 @@ fn build(
     let n = k(&mut s, ms.vertex_dwords);
     let at = s.m.bin(b, Bin::Mul, index, n);
     let vertex_at = s.m.bin(b, Bin::Add, group, at);
+    // The records of the triangle's corners 1 and 2, where an input of
+    // ours reads them.
+    let mut corners = [None, None];
+    for c in 1..=2u32 {
+        if !sources.iter().any(|s| matches!(s, Source::Corner(k, _) if *k == c)) {
+            continue;
+        }
+        let n = k(&mut s, c);
+        let index_at = s.m.bin(b, Bin::Add, primitive_at, n);
+        let index = load(&mut s, h, index_at);
+        let index = s.m.cast(b, Cast::Bitcast, index, s.t.i32);
+        let n = k(&mut s, ms.vertex_dwords);
+        let at = s.m.bin(b, Bin::Mul, index, n);
+        corners[c as usize - 1] = Some(s.m.bin(b, Bin::Add, group, at));
+    }
 
     for (id, source) in sources.iter().enumerate() {
         let float = s.outputs[id].comp == 9;
         for col in 0..s.outputs[id].cols {
             let value = match *source {
                 Source::Zero => None,
+                Source::Weights => {
+                    // 1 >> (corner ^ col): 1 at corner col, 0 at the others.
+                    let c = k(&mut s, u32::from(col));
+                    let x = s.m.bin(b, Bin::Xor, corner, c);
+                    let one = k(&mut s, 1);
+                    let w = s.m.bin(b, Bin::LShr, one, x);
+                    Some(s.m.cast(b, Cast::UiToFp, w, s.t.f32))
+                }
+                Source::Corner(c, d) => {
+                    let record = corners[c as usize - 1].unwrap_or(vertex_at);
+                    let d = k(&mut s, d + u32::from(col));
+                    let at = s.m.bin(b, Bin::Add, record, d);
+                    Some(load(&mut s, h, at))
+                }
                 Source::Vertex(d) | Source::Primitive(d) => {
                     let record = if matches!(source, Source::Vertex(_)) {
                         vertex_at
@@ -275,6 +331,32 @@ mod tests {
             v.validate(&mut vs.clone()).unwrap();
             let alone = build(&ms, &vertex, &prims, &[]).unwrap();
             v.validate(&mut alone.clone()).unwrap();
+        }
+    }
+
+    /// Emulated barycentrics and corner copies (a pixel program translated
+    /// for a host without them) are outputs too, and the validator, where
+    /// there is one, accepts the shader.
+    #[test]
+    fn emulated_barycentrics_and_corners_are_written() {
+        let (ms, vertex, prims) = mesh();
+        let ps = [
+            SigElement { interp: 1, ..element("TEXCOORD", 0, 0, 9, 0, 4) },
+            SigElement { interp: 2, ..element(super::super::lower::EMULATED_BARYCENTRICS, 0, 0, 9, 1, 3) },
+            SigElement { interp: 1, ..element("VICTORYV1_TEXCOORD", 0, 0, 9, 2, 4) },
+            SigElement { interp: 1, ..element("VICTORYV2_TEXCOORD", 0, 0, 9, 3, 4) },
+        ];
+        let vs = build(&ms, &vertex, &prims, &ps).unwrap();
+        let c = Container::parse(&vs).unwrap();
+        let outs = super::super::signature(c.part(FourCC::OSG1).unwrap().data).unwrap();
+        for (o, p) in outs.iter().zip(&ps) {
+            assert_eq!((&o.name, o.index, o.row, o.cols), (&p.name, p.index, p.row, p.cols));
+        }
+        #[cfg(windows)]
+        if let Ok(mut v) = super::super::validator::Validator::load(
+            super::super::validator::Validator::default_path().as_deref(),
+        ) {
+            v.validate(&mut vs.clone()).unwrap();
         }
     }
 
